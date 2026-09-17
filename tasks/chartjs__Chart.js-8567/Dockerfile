@@ -101,22 +101,25 @@ python2 -V
 EOF_55f960f4ac15
 
 
-RUN <<EOF_dc5eb721fd78
+RUN <<EOF_84df90412aba
 #!/bin/bash
 set -euxo pipefail
 (mkdir -p /testbed && cd /testbed && git init -q . && git remote add origin https://github.com/chartjs/Chart.js && git fetch -q --depth 1 origin 91628c144944029505de093c43733961ab4f420f && git reset -q --hard FETCH_HEAD) || (rm -rf /testbed && git clone -o origin https://github.com/chartjs/Chart.js /testbed)
 cd /testbed
 git reset --hard 91628c144944029505de093c43733961ab4f420f
 git remote remove origin
-TARGET_TIMESTAMP=$(git show -s --format=%ci 91628c144944029505de093c43733961ab4f420f)
-TARGET_EPOCH=$(git show -s --format=%ct 91628c144944029505de093c43733961ab4f420f)
-for tag in $(git tag -l); do TAG_EPOCH=$(git log -1 --format=%ct "$tag" 2>/dev/null || echo 0); if [ "${TAG_EPOCH:-0}" -gt "$TARGET_EPOCH" ]; then git tag -d "$tag" >/dev/null 2>&1 || true; fi; done
+BASE_COMMIT=$(git rev-parse 91628c144944029505de093c43733961ab4f420f^{commit})
+for tag in $(git tag -l); do TAG_COMMIT=$(git rev-parse -q --verify "$tag^{commit}" 2>/dev/null || true); if [ -z "$TAG_COMMIT" ] || ! git merge-base --is-ancestor "$TAG_COMMIT" "$BASE_COMMIT"; then git tag -d "$tag" >/dev/null 2>&1 || true; fi; done
 git branch | grep -v '^\*' | xargs -r git branch -D || true
+rm -f .git/ORIG_HEAD .git/FETCH_HEAD
 git reflog expire --expire=now --all
 git gc --prune=now --aggressive
-AFTER_TIMESTAMP=$(date -d "$TARGET_TIMESTAMP + 1 second" '+%Y-%m-%d %H:%M:%S')
-COMMIT_COUNT=$(git log --oneline --all --since="$AFTER_TIMESTAMP" | wc -l)
-[ "$COMMIT_COUNT" -eq 0 ] || exit 1
+EXTRA_REF_COMMITS=$(git rev-list --all --not "$BASE_COMMIT" | wc -l)
+[ "$EXTRA_REF_COMMITS" -eq 0 ] || exit 1
+EXTRA_STORED_COMMITS=$(comm -23 <(git cat-file --batch-all-objects --batch-check="%(objecttype) %(objectname)" | awk '$1 == "commit" {print $2}' | sort) <(git rev-list "$BASE_COMMIT" | sort) | wc -l)
+[ "$EXTRA_STORED_COMMITS" -eq 0 ] || exit 1
+UNREACHABLE_OBJECTS=$(git fsck --unreachable --no-reflogs 2>/dev/null | wc -l)
+[ "$UNREACHABLE_OBJECTS" -eq 0 ] || exit 1
 chmod -R 777 /testbed
 cd - || true
 cd /testbed
@@ -124,20 +127,7 @@ git clean -fdxq
 source $NVM_DIR/nvm.sh
 npm install
 chmod -R 777 /testbed
-EOF_dc5eb721fd78
-
-
-RUN <<EOF_49af5ac9b9e8
-#!/bin/bash
-set -euxo pipefail
-mkdir -p /swebench/image_assets
-mkdir -p $(dirname '/swebench/image_assets/test_patch/test/fixtures/core.layouts/long-labels.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/test/fixtures/core.layouts/long-labels.png' 'https://raw.githubusercontent.com/chartjs/Chart.js/15613ba048b1440f34032c8a5d9a0c8d1eb73e2e/test/fixtures/core.layouts/long-labels.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/test/fixtures/core.layouts/refit-vertical-boxes.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/test/fixtures/core.layouts/refit-vertical-boxes.png' 'https://raw.githubusercontent.com/chartjs/Chart.js/15613ba048b1440f34032c8a5d9a0c8d1eb73e2e/test/fixtures/core.layouts/refit-vertical-boxes.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/test/fixtures/scale.time/invalid-data.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/test/fixtures/scale.time/invalid-data.png' 'https://raw.githubusercontent.com/chartjs/Chart.js/15613ba048b1440f34032c8a5d9a0c8d1eb73e2e/test/fixtures/scale.time/invalid-data.png' || true
-EOF_49af5ac9b9e8
+EOF_84df90412aba
 
 
 COPY ["problem_assets", "/problem_assets"]

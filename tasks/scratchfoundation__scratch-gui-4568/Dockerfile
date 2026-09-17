@@ -98,22 +98,25 @@ python2 -V
 EOF_602599b66b13
 
 
-RUN <<EOF_169fd05e263a
+RUN <<EOF_0fa3d98e1d72
 #!/bin/bash
 set -euxo pipefail
 (mkdir -p /testbed && cd /testbed && git init -q . && git remote add origin https://github.com/scratchfoundation/scratch-gui && git fetch -q --depth 1 origin 1a2c3bd0b752b9069896728b37dee2babd505679 && git reset -q --hard FETCH_HEAD) || (rm -rf /testbed && git clone -o origin https://github.com/scratchfoundation/scratch-gui /testbed)
 cd /testbed
 git reset --hard 1a2c3bd0b752b9069896728b37dee2babd505679
 git remote remove origin
-TARGET_TIMESTAMP=$(git show -s --format=%ci 1a2c3bd0b752b9069896728b37dee2babd505679)
-TARGET_EPOCH=$(git show -s --format=%ct 1a2c3bd0b752b9069896728b37dee2babd505679)
-for tag in $(git tag -l); do TAG_EPOCH=$(git log -1 --format=%ct "$tag" 2>/dev/null || echo 0); if [ "${TAG_EPOCH:-0}" -gt "$TARGET_EPOCH" ]; then git tag -d "$tag" >/dev/null 2>&1 || true; fi; done
+BASE_COMMIT=$(git rev-parse 1a2c3bd0b752b9069896728b37dee2babd505679^{commit})
+for tag in $(git tag -l); do TAG_COMMIT=$(git rev-parse -q --verify "$tag^{commit}" 2>/dev/null || true); if [ -z "$TAG_COMMIT" ] || ! git merge-base --is-ancestor "$TAG_COMMIT" "$BASE_COMMIT"; then git tag -d "$tag" >/dev/null 2>&1 || true; fi; done
 git branch | grep -v '^\*' | xargs -r git branch -D || true
+rm -f .git/ORIG_HEAD .git/FETCH_HEAD
 git reflog expire --expire=now --all
 git gc --prune=now --aggressive
-AFTER_TIMESTAMP=$(date -d "$TARGET_TIMESTAMP + 1 second" '+%Y-%m-%d %H:%M:%S')
-COMMIT_COUNT=$(git log --oneline --all --since="$AFTER_TIMESTAMP" | wc -l)
-[ "$COMMIT_COUNT" -eq 0 ] || exit 1
+EXTRA_REF_COMMITS=$(git rev-list --all --not "$BASE_COMMIT" | wc -l)
+[ "$EXTRA_REF_COMMITS" -eq 0 ] || exit 1
+EXTRA_STORED_COMMITS=$(comm -23 <(git cat-file --batch-all-objects --batch-check="%(objecttype) %(objectname)" | awk '$1 == "commit" {print $2}' | sort) <(git rev-list "$BASE_COMMIT" | sort) | wc -l)
+[ "$EXTRA_STORED_COMMITS" -eq 0 ] || exit 1
+UNREACHABLE_OBJECTS=$(git fsck --unreachable --no-reflogs 2>/dev/null | wc -l)
+[ "$UNREACHABLE_OBJECTS" -eq 0 ] || exit 1
 chmod -R 777 /testbed
 cd - || true
 cd /testbed
@@ -123,7 +126,7 @@ npm install
 npm install cheerio@1.0.0-rc.3
 npm show cheerio
 chmod -R 777 /testbed
-EOF_169fd05e263a
+EOF_0fa3d98e1d72
 
 
 COPY ["problem_assets", "/problem_assets"]

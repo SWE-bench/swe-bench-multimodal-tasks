@@ -101,22 +101,25 @@ python2 -V
 EOF_55f960f4ac15
 
 
-RUN <<EOF_7ee70056631f
+RUN <<EOF_28b0f463d791
 #!/bin/bash
 set -euxo pipefail
 (mkdir -p /testbed && cd /testbed && git init -q . && git remote add origin https://github.com/openlayers/openlayers && git fetch -q --depth 1 origin b28273044fbe7c7fd6335c73f428e0d890a7e33d && git reset -q --hard FETCH_HEAD) || (rm -rf /testbed && git clone -o origin https://github.com/openlayers/openlayers /testbed)
 cd /testbed
 git reset --hard b28273044fbe7c7fd6335c73f428e0d890a7e33d
 git remote remove origin
-TARGET_TIMESTAMP=$(git show -s --format=%ci b28273044fbe7c7fd6335c73f428e0d890a7e33d)
-TARGET_EPOCH=$(git show -s --format=%ct b28273044fbe7c7fd6335c73f428e0d890a7e33d)
-for tag in $(git tag -l); do TAG_EPOCH=$(git log -1 --format=%ct "$tag" 2>/dev/null || echo 0); if [ "${TAG_EPOCH:-0}" -gt "$TARGET_EPOCH" ]; then git tag -d "$tag" >/dev/null 2>&1 || true; fi; done
+BASE_COMMIT=$(git rev-parse b28273044fbe7c7fd6335c73f428e0d890a7e33d^{commit})
+for tag in $(git tag -l); do TAG_COMMIT=$(git rev-parse -q --verify "$tag^{commit}" 2>/dev/null || true); if [ -z "$TAG_COMMIT" ] || ! git merge-base --is-ancestor "$TAG_COMMIT" "$BASE_COMMIT"; then git tag -d "$tag" >/dev/null 2>&1 || true; fi; done
 git branch | grep -v '^\*' | xargs -r git branch -D || true
+rm -f .git/ORIG_HEAD .git/FETCH_HEAD
 git reflog expire --expire=now --all
 git gc --prune=now --aggressive
-AFTER_TIMESTAMP=$(date -d "$TARGET_TIMESTAMP + 1 second" '+%Y-%m-%d %H:%M:%S')
-COMMIT_COUNT=$(git log --oneline --all --since="$AFTER_TIMESTAMP" | wc -l)
-[ "$COMMIT_COUNT" -eq 0 ] || exit 1
+EXTRA_REF_COMMITS=$(git rev-list --all --not "$BASE_COMMIT" | wc -l)
+[ "$EXTRA_REF_COMMITS" -eq 0 ] || exit 1
+EXTRA_STORED_COMMITS=$(comm -23 <(git cat-file --batch-all-objects --batch-check="%(objecttype) %(objectname)" | awk '$1 == "commit" {print $2}' | sort) <(git rev-list "$BASE_COMMIT" | sort) | wc -l)
+[ "$EXTRA_STORED_COMMITS" -eq 0 ] || exit 1
+UNREACHABLE_OBJECTS=$(git fsck --unreachable --no-reflogs 2>/dev/null | wc -l)
+[ "$UNREACHABLE_OBJECTS" -eq 0 ] || exit 1
 chmod -R 777 /testbed
 cd - || true
 cd /testbed
@@ -124,20 +127,7 @@ git clean -fdxq
 source $NVM_DIR/nvm.sh
 npm install
 chmod -R 777 /testbed
-EOF_7ee70056631f
-
-
-RUN <<EOF_286dcbc6e90c
-#!/bin/bash
-set -euxo pipefail
-mkdir -p /swebench/image_assets
-mkdir -p $(dirname '/swebench/image_assets/test_patch/test/rendering/cases/layer-vector-extent-rotation-declutter/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/test/rendering/cases/layer-vector-extent-rotation-declutter/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/9d7208e87d98c3350c2e56d2241ac5b3d4030663/test/rendering/cases/layer-vector-extent-rotation-declutter/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/test/rendering/cases/layer-vector-multi-world-declutter/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/test/rendering/cases/layer-vector-multi-world-declutter/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/9d7208e87d98c3350c2e56d2241ac5b3d4030663/test/rendering/cases/layer-vector-multi-world-declutter/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/test/rendering/cases/vector-layer-opacity-declutter/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/test/rendering/cases/vector-layer-opacity-declutter/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/9d7208e87d98c3350c2e56d2241ac5b3d4030663/test/rendering/cases/vector-layer-opacity-declutter/expected.png' || true
-EOF_286dcbc6e90c
+EOF_28b0f463d791
 
 
 COPY ["problem_assets", "/problem_assets"]

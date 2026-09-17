@@ -98,22 +98,25 @@ python2 -V
 EOF_602599b66b13
 
 
-RUN <<EOF_b87dcb2466d2
+RUN <<EOF_0abe51a146be
 #!/bin/bash
 set -euxo pipefail
 (mkdir -p /testbed && cd /testbed && git init -q . && git remote add origin https://github.com/carbon-design-system/carbon && git fetch -q --depth 1 origin e2dd10ff8389a42f3c17a1c512d223d4391e173b && git reset -q --hard FETCH_HEAD) || (rm -rf /testbed && git clone -o origin https://github.com/carbon-design-system/carbon /testbed)
 cd /testbed
 git reset --hard e2dd10ff8389a42f3c17a1c512d223d4391e173b
 git remote remove origin
-TARGET_TIMESTAMP=$(git show -s --format=%ci e2dd10ff8389a42f3c17a1c512d223d4391e173b)
-TARGET_EPOCH=$(git show -s --format=%ct e2dd10ff8389a42f3c17a1c512d223d4391e173b)
-for tag in $(git tag -l); do TAG_EPOCH=$(git log -1 --format=%ct "$tag" 2>/dev/null || echo 0); if [ "${TAG_EPOCH:-0}" -gt "$TARGET_EPOCH" ]; then git tag -d "$tag" >/dev/null 2>&1 || true; fi; done
+BASE_COMMIT=$(git rev-parse e2dd10ff8389a42f3c17a1c512d223d4391e173b^{commit})
+for tag in $(git tag -l); do TAG_COMMIT=$(git rev-parse -q --verify "$tag^{commit}" 2>/dev/null || true); if [ -z "$TAG_COMMIT" ] || ! git merge-base --is-ancestor "$TAG_COMMIT" "$BASE_COMMIT"; then git tag -d "$tag" >/dev/null 2>&1 || true; fi; done
 git branch | grep -v '^\*' | xargs -r git branch -D || true
+rm -f .git/ORIG_HEAD .git/FETCH_HEAD
 git reflog expire --expire=now --all
 git gc --prune=now --aggressive
-AFTER_TIMESTAMP=$(date -d "$TARGET_TIMESTAMP + 1 second" '+%Y-%m-%d %H:%M:%S')
-COMMIT_COUNT=$(git log --oneline --all --since="$AFTER_TIMESTAMP" | wc -l)
-[ "$COMMIT_COUNT" -eq 0 ] || exit 1
+EXTRA_REF_COMMITS=$(git rev-list --all --not "$BASE_COMMIT" | wc -l)
+[ "$EXTRA_REF_COMMITS" -eq 0 ] || exit 1
+EXTRA_STORED_COMMITS=$(comm -23 <(git cat-file --batch-all-objects --batch-check="%(objecttype) %(objectname)" | awk '$1 == "commit" {print $2}' | sort) <(git rev-list "$BASE_COMMIT" | sort) | wc -l)
+[ "$EXTRA_STORED_COMMITS" -eq 0 ] || exit 1
+UNREACHABLE_OBJECTS=$(git fsck --unreachable --no-reflogs 2>/dev/null | wc -l)
+[ "$UNREACHABLE_OBJECTS" -eq 0 ] || exit 1
 chmod -R 777 /testbed
 cd - || true
 cd /testbed
@@ -125,7 +128,21 @@ yarn build
 wget -q https://registry.npmjs.org/nwsapi/-/nwsapi-2.2.7.tgz && tar xzf nwsapi-2.2.7.tgz -C node_modules/nwsapi --strip-components=1 && rm nwsapi-2.2.7.tgz
 echo 'ruleArchive: 07Oct2020' > .achecker.yml
 chmod -R 777 /testbed
-EOF_b87dcb2466d2
+EOF_0abe51a146be
+
+RUN <<EOF_a8f8a46e9ac8
+#!/bin/bash
+set -euxo pipefail
+cd /testbed
+mkdir -p /opt/achecker-offline/archives/2020.10.07/js
+curl --retry 5 --retry-all-errors --connect-timeout 30 -fsSL https://cdn.jsdelivr.net/npm/accessibility-checker-engine@3.1.0/ace-node.js -o /opt/achecker-offline/archives/2020.10.07/js/ace-node.js
+curl --retry 5 --retry-all-errors --connect-timeout 30 -fsSL https://cdn.jsdelivr.net/npm/accessibility-checker-engine@3.1.0/ace.js -o /opt/achecker-offline/archives/2020.10.07/js/ace.js
+printf '%s\n' '7d15e331ff61d00bb4688c4cc0ec1cda91d0e9d023c49a0ad66210d9d4cfad88  /opt/achecker-offline/archives/2020.10.07/js/ace-node.js' '49fd0b40371078288a3b0ba7efefba4db7c055e69a31d5657e0bd8bac50e1353  /opt/achecker-offline/archives/2020.10.07/js/ace.js' | sha256sum -c -
+printf '%s\n' '[{"id":"07Oct2020","name":"07 October 2020 Deployment (IBM 7.2)","version":"3.1.0","path":"/archives/2020.10.07","hidden":true}]' > /opt/achecker-offline/archives.json
+printf '%s\n' 'ruleArchive: 07Oct2020' 'customRuleServer: true' 'rulePack: http://127.0.0.1:18080/archives/2020.10.07/js' 'ruleServer: http://127.0.0.1:18080' > /opt/achecker-offline/.achecker.yml
+for checker_dir in node_modules/accessibility-checker config/jest-config-carbon/node_modules/accessibility-checker; do if [ -d "$checker_dir" ]; then find "$checker_dir" -type f -name ACMetricsLogger.js -exec sed -i 's#https://able.ibm.com/tools#http://127.0.0.1:18080/tools#g' {} +; fi; done
+rm -f .achecker.yml
+EOF_a8f8a46e9ac8
 
 
 COPY ["problem_assets", "/problem_assets"]

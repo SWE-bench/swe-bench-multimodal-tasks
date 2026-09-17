@@ -72,11 +72,11 @@ WORKDIR /home/chromeuser
 
 USER root
 
-ENV NODE_VERSION 14.11.0
+ENV NODE_VERSION 14.21.3
 ENV NODE_PATH $NVM_DIR/v$NODE_VERSION/lib/node_modules
 ENV PATH $NVM_DIR/versions/node/v$NODE_VERSION/bin:$PATH
 
-RUN <<EOF_2934b9866891
+RUN <<EOF_4c69a6c11cdd
 #!/bin/bash
 set -euxo pipefail
 apt-get update
@@ -92,31 +92,34 @@ apt-get update
 apt-get install -y python3.9
 ln -sf /usr/bin/python3.9 /usr/bin/python
 apt-get install -y python2
-echo "export NODE_PATH=$NVM_DIR/v14.11.0/lib/node_modules" >> /etc/environment
-echo "export PATH=$NVM_DIR/versions/node/v14.11.0/bin:$PATH" >> /etc/environment
+echo "export NODE_PATH=$NVM_DIR/v14.21.3/lib/node_modules" >> /etc/environment
+echo "export PATH=$NVM_DIR/versions/node/v14.21.3/bin:$PATH" >> /etc/environment
 source $NVM_DIR/nvm.sh && node -v
 source $NVM_DIR/nvm.sh && npm -v
 python -V
 python2 -V
-EOF_2934b9866891
+EOF_4c69a6c11cdd
 
 
-RUN <<EOF_09e876412941
+RUN <<EOF_619768a0085d
 #!/bin/bash
 set -euxo pipefail
 (mkdir -p /testbed && cd /testbed && git init -q . && git remote add origin https://github.com/alibaba-fusion/next && git fetch -q --depth 1 origin 261b9001b198579b9ceb88ea75f4897e8cce161f && git reset -q --hard FETCH_HEAD) || (rm -rf /testbed && git clone -o origin https://github.com/alibaba-fusion/next /testbed)
 cd /testbed
 git reset --hard 261b9001b198579b9ceb88ea75f4897e8cce161f
 git remote remove origin
-TARGET_TIMESTAMP=$(git show -s --format=%ci 261b9001b198579b9ceb88ea75f4897e8cce161f)
-TARGET_EPOCH=$(git show -s --format=%ct 261b9001b198579b9ceb88ea75f4897e8cce161f)
-for tag in $(git tag -l); do TAG_EPOCH=$(git log -1 --format=%ct "$tag" 2>/dev/null || echo 0); if [ "${TAG_EPOCH:-0}" -gt "$TARGET_EPOCH" ]; then git tag -d "$tag" >/dev/null 2>&1 || true; fi; done
+BASE_COMMIT=$(git rev-parse 261b9001b198579b9ceb88ea75f4897e8cce161f^{commit})
+for tag in $(git tag -l); do TAG_COMMIT=$(git rev-parse -q --verify "$tag^{commit}" 2>/dev/null || true); if [ -z "$TAG_COMMIT" ] || ! git merge-base --is-ancestor "$TAG_COMMIT" "$BASE_COMMIT"; then git tag -d "$tag" >/dev/null 2>&1 || true; fi; done
 git branch | grep -v '^\*' | xargs -r git branch -D || true
+rm -f .git/ORIG_HEAD .git/FETCH_HEAD
 git reflog expire --expire=now --all
 git gc --prune=now --aggressive
-AFTER_TIMESTAMP=$(date -d "$TARGET_TIMESTAMP + 1 second" '+%Y-%m-%d %H:%M:%S')
-COMMIT_COUNT=$(git log --oneline --all --since="$AFTER_TIMESTAMP" | wc -l)
-[ "$COMMIT_COUNT" -eq 0 ] || exit 1
+EXTRA_REF_COMMITS=$(git rev-list --all --not "$BASE_COMMIT" | wc -l)
+[ "$EXTRA_REF_COMMITS" -eq 0 ] || exit 1
+EXTRA_STORED_COMMITS=$(comm -23 <(git cat-file --batch-all-objects --batch-check="%(objecttype) %(objectname)" | awk '$1 == "commit" {print $2}' | sort) <(git rev-list "$BASE_COMMIT" | sort) | wc -l)
+[ "$EXTRA_STORED_COMMITS" -eq 0 ] || exit 1
+UNREACHABLE_OBJECTS=$(git fsck --unreachable --no-reflogs 2>/dev/null | wc -l)
+[ "$UNREACHABLE_OBJECTS" -eq 0 ] || exit 1
 chmod -R 777 /testbed
 cd - || true
 cd /testbed
@@ -131,7 +134,7 @@ npm show cheerio
 npm install puppeteer@19.11.1 --save-exact
 npm install highlight.js@10.7.3 --save-exact
 chmod -R 777 /testbed
-EOF_09e876412941
+EOF_619768a0085d
 
 
 COPY ["problem_assets", "/problem_assets"]

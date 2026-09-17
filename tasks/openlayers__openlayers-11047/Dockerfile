@@ -101,22 +101,25 @@ python2 -V
 EOF_55f960f4ac15
 
 
-RUN <<EOF_d1b6742a1d5e
+RUN <<EOF_5586ed5decaf
 #!/bin/bash
 set -euxo pipefail
 (mkdir -p /testbed && cd /testbed && git init -q . && git remote add origin https://github.com/openlayers/openlayers && git fetch -q --depth 1 origin bfc035415edabfe297faf6d68575d8118e088fba && git reset -q --hard FETCH_HEAD) || (rm -rf /testbed && git clone -o origin https://github.com/openlayers/openlayers /testbed)
 cd /testbed
 git reset --hard bfc035415edabfe297faf6d68575d8118e088fba
 git remote remove origin
-TARGET_TIMESTAMP=$(git show -s --format=%ci bfc035415edabfe297faf6d68575d8118e088fba)
-TARGET_EPOCH=$(git show -s --format=%ct bfc035415edabfe297faf6d68575d8118e088fba)
-for tag in $(git tag -l); do TAG_EPOCH=$(git log -1 --format=%ct "$tag" 2>/dev/null || echo 0); if [ "${TAG_EPOCH:-0}" -gt "$TARGET_EPOCH" ]; then git tag -d "$tag" >/dev/null 2>&1 || true; fi; done
+BASE_COMMIT=$(git rev-parse bfc035415edabfe297faf6d68575d8118e088fba^{commit})
+for tag in $(git tag -l); do TAG_COMMIT=$(git rev-parse -q --verify "$tag^{commit}" 2>/dev/null || true); if [ -z "$TAG_COMMIT" ] || ! git merge-base --is-ancestor "$TAG_COMMIT" "$BASE_COMMIT"; then git tag -d "$tag" >/dev/null 2>&1 || true; fi; done
 git branch | grep -v '^\*' | xargs -r git branch -D || true
+rm -f .git/ORIG_HEAD .git/FETCH_HEAD
 git reflog expire --expire=now --all
 git gc --prune=now --aggressive
-AFTER_TIMESTAMP=$(date -d "$TARGET_TIMESTAMP + 1 second" '+%Y-%m-%d %H:%M:%S')
-COMMIT_COUNT=$(git log --oneline --all --since="$AFTER_TIMESTAMP" | wc -l)
-[ "$COMMIT_COUNT" -eq 0 ] || exit 1
+EXTRA_REF_COMMITS=$(git rev-list --all --not "$BASE_COMMIT" | wc -l)
+[ "$EXTRA_REF_COMMITS" -eq 0 ] || exit 1
+EXTRA_STORED_COMMITS=$(comm -23 <(git cat-file --batch-all-objects --batch-check="%(objecttype) %(objectname)" | awk '$1 == "commit" {print $2}' | sort) <(git rev-list "$BASE_COMMIT" | sort) | wc -l)
+[ "$EXTRA_STORED_COMMITS" -eq 0 ] || exit 1
+UNREACHABLE_OBJECTS=$(git fsck --unreachable --no-reflogs 2>/dev/null | wc -l)
+[ "$UNREACHABLE_OBJECTS" -eq 0 ] || exit 1
 chmod -R 777 /testbed
 cd - || true
 cd /testbed
@@ -125,7 +128,7 @@ source $NVM_DIR/nvm.sh
 npm install
 sed -i "s|process.env.CHROME_BIN = require('puppeteer').executablePath();|process.env.CHROME_BIN = '/usr/bin/google-chrome-stable';|" test/karma.config.js
 chmod -R 777 /testbed
-EOF_d1b6742a1d5e
+EOF_5586ed5decaf
 
 
 COPY ["problem_assets", "/problem_assets"]

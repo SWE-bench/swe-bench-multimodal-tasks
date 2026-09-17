@@ -1,4 +1,5 @@
 #!/bin/bash
+exec 2>&1
 set -uxo pipefail
 cd /testbed
 git config --global --add safe.directory /testbed

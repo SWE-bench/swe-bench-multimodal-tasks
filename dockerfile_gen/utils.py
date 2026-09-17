@@ -55,24 +55,30 @@ def git_clone_timesafe(repo: str, base_commit: str, workdir: str) -> list[str]:
         f"cd {workdir}",
         f"git reset --hard {base_commit}",
         "git remote remove origin",
-        f"TARGET_TIMESTAMP=$(git show -s --format=%ci {base_commit})",
-        f"TARGET_EPOCH=$(git show -s --format=%ct {base_commit})",
-        # Delete refs newer than the base commit. Deleting *all* tags instead is
-        # simpler but breaks version derivation: setuptools_scm falls back to
-        # 0.1.dev..., which trips pytest's own `minversion` gate so no tests run.
-        # Use a for-loop, not `git tag -l | while read`: a git command in the loop
-        # body consumes the piped stdin, so that form silently stopped early.
-        'for tag in $(git tag -l); do TAG_EPOCH=$(git log -1 --format=%ct "$tag" 2>/dev/null || echo 0); if [ "${TAG_EPOCH:-0}" -gt "$TARGET_EPOCH" ]; then git tag -d "$tag" >/dev/null 2>&1 || true; fi; done',
+        f"BASE_COMMIT=$(git rev-parse {base_commit}^{{commit}})",
+        # Retain only tags whose target commit is an ancestor of the task's base.
+        # Commit timestamps are attacker-controlled and therefore cannot define the
+        # history boundary: a backdated descendant would otherwise remain reachable.
+        # Deleting every tag is not viable because some projects derive their version
+        # from an older reachable tag during tests.
+        'for tag in $(git tag -l); do TAG_COMMIT=$(git rev-parse -q --verify "$tag^{commit}" 2>/dev/null || true); if [ -z "$TAG_COMMIT" ] || ! git merge-base --is-ancestor "$TAG_COMMIT" "$BASE_COMMIT"; then git tag -d "$tag" >/dev/null 2>&1 || true; fi; done',
         "git branch | grep -v '^\\*' | xargs -r git branch -D || true",
+        # These pseudo-refs are not covered by `git reflog expire`; leaving the old
+        # reset/fetch tips behind exposes identifiers outside the permitted graph.
+        "rm -f .git/ORIG_HEAD .git/FETCH_HEAD",
         "git reflog expire --expire=now --all",
         # Physically drop the now-unreachable future commits; without this they
         # stay in the pack and are readable via git cat-file / fsck.
         "git gc --prune=now --aggressive",
-        # Fail the build if anything newer than the base commit survived, so a
-        # broken prune can never ship as a silently leaky image.
-        "AFTER_TIMESTAMP=$(date -d \"$TARGET_TIMESTAMP + 1 second\" '+%Y-%m-%d %H:%M:%S')",
-        'COMMIT_COUNT=$(git log --oneline --all --since="$AFTER_TIMESTAMP" | wc -l)',
-        '[ "$COMMIT_COUNT" -eq 0 ] || exit 1',
+        # Assert both reference reachability and physical object storage. The second
+        # check catches an unreachable future commit that a failed gc left readable
+        # through `git cat-file`, even though `git log --all` cannot see it.
+        'EXTRA_REF_COMMITS=$(git rev-list --all --not "$BASE_COMMIT" | wc -l)',
+        '[ "$EXTRA_REF_COMMITS" -eq 0 ] || exit 1',
+        'EXTRA_STORED_COMMITS=$(comm -23 <(git cat-file --batch-all-objects --batch-check="%(objecttype) %(objectname)" | awk \'$1 == "commit" {print $2}\' | sort) <(git rev-list "$BASE_COMMIT" | sort) | wc -l)',
+        '[ "$EXTRA_STORED_COMMITS" -eq 0 ] || exit 1',
+        'UNREACHABLE_OBJECTS=$(git fsck --unreachable --no-reflogs 2>/dev/null | wc -l)',
+        '[ "$UNREACHABLE_OBJECTS" -eq 0 ] || exit 1',
         # chmod last: `git reset --hard` above re-creates working-tree files as
         # root-owned 0644, so chmod'ing before it left committed lockfiles
         # unwritable by chromeuser and npm install failed with EACCES.

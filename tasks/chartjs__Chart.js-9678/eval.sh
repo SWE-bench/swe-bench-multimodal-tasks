@@ -1,4 +1,5 @@
 #!/bin/bash
+exec 2>&1
 set -uxo pipefail
 cd /testbed
 git config --global --add safe.directory /testbed
@@ -7,7 +8,6 @@ git status
 git show
 git -c core.fileMode=false diff 8e68481ec4e29599660332f58967f439fb2ef17c
 git checkout 8e68481ec4e29599660332f58967f439fb2ef17c test/fixtures/controller.bar/bar-base-value.png test/fixtures/controller.bar/bar-thickness-flex-offset.png test/fixtures/controller.bar/bar-thickness-flex.png test/fixtures/controller.bar/bar-thickness-offset.png test/fixtures/controller.bar/bar-thickness-reverse.png test/fixtures/controller.bar/bar-thickness-stacked.png test/fixtures/controller.bar/baseLine/bottom.png test/fixtures/controller.bar/baseLine/left.png test/fixtures/controller.bar/baseLine/mid-x.png test/fixtures/controller.bar/baseLine/mid-y.png test/fixtures/controller.bar/baseLine/right.png test/fixtures/controller.bar/baseLine/top.png test/fixtures/controller.bar/baseLine/value-x.png test/fixtures/controller.bar/baseLine/value-y.png test/fixtures/controller.bar/borderRadius/border-radius-stacked-number-mixed-chart.png test/fixtures/controller.bar/borderRadius/border-radius-stacked-number-with-order.png test/fixtures/controller.bar/borderRadius/border-radius-stacked-number.png test/fixtures/controller.bar/borderRadius/border-radius.png test/fixtures/controller.bar/borderSkipped/middle.png test/fixtures/controller.bar/borderWidth/indexable.png test/fixtures/controller.bar/borderWidth/object.png test/fixtures/controller.bar/borderWidth/value.png test/fixtures/controller.bar/horizontal-borders.png test/fixtures/controller.bar/minBarLength/vertical.png
-test -d /swebench/image_assets/test_patch && cp -a /swebench/image_assets/test_patch/. /testbed/ 2>/dev/null || true
 if ! git diff --quiet HEAD -- package.json 2>/dev/null; then echo "package.json changed by patch; re-syncing dependencies"; export PUPPETEER_SKIP_DOWNLOAD=true PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true; if [ -f yarn.lock ]; then timeout 900 yarn install --silent > /dev/null 2>&1 || true; else timeout 900 npm install --silent > /dev/null 2>&1 || true; fi; chmod -R a+rX node_modules > /dev/null 2>&1 || true; fi
 : '>>>>> Start Test Output'
 npm install ; npm run build ; sed -i '0,/\.set({/s//.set({\n    browserNoActivityTimeout: 300000,/' ./karma.conf.js ; xvfb-run --server-args="-screen 0 1280x1024x24 -ac :99" su chromeuser -c "./node_modules/.bin/cross-env NODE_ENV=test ./node_modules/.bin/karma start ./karma.conf.js --single-run --coverage --grep --auto-watch false"

@@ -11,6 +11,8 @@ image_assets:
   test_patch:
   - path: test/rendering/cases/webgl-tile-aspect-ratio/expected.png
     url: https://raw.githubusercontent.com/openlayers/openlayers/b490b2e01a1821cd28f4cd86662265d48a016f52/test/rendering/cases/webgl-tile-aspect-ratio/expected.png
+  - path: test/rendering/data/raster/non-square-pixels.tif
+    url: https://raw.githubusercontent.com/openlayers/openlayers/b490b2e01a1821cd28f4cd86662265d48a016f52/test/rendering/data/raster/non-square-pixels.tif
 instance_id: openlayers__openlayers-13648
 log_parser: parse_log_openlayers
 repo: openlayers/openlayers

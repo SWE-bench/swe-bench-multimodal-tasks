@@ -14,6 +14,10 @@ image_assets:
     url: https://raw.githubusercontent.com/openlayers/openlayers/25b20076360a1b25cd092dcb2abc6da750ca663e/test/rendering/cases/cog-f32-nodata/expected.png
   - path: test/rendering/cases/cog-i16-nodata/expected.png
     url: https://raw.githubusercontent.com/openlayers/openlayers/25b20076360a1b25cd092dcb2abc6da750ca663e/test/rendering/cases/cog-i16-nodata/expected.png
+  - path: test/rendering/data/raster/elevation-f32.tif
+    url: https://raw.githubusercontent.com/openlayers/openlayers/25b20076360a1b25cd092dcb2abc6da750ca663e/test/rendering/data/raster/elevation-f32.tif
+  - path: test/rendering/data/raster/elevation-i16.tif
+    url: https://raw.githubusercontent.com/openlayers/openlayers/25b20076360a1b25cd092dcb2abc6da750ca663e/test/rendering/data/raster/elevation-i16.tif
 instance_id: openlayers__openlayers-13669
 log_parser: parse_log_openlayers
 repo: openlayers/openlayers
