@@ -5,7 +5,7 @@ carry. The dataset lists those files under ``image_assets`` as {path, url} pairs
 and the harness stages them into the container after applying the patch.
 
 Keeping a copy with the task means an evaluation does not depend on a url still
-being reachable years later. Assets live at ``tasks/<instance_id>/assets/<path>``,
+being reachable years later. Assets live at ``tasks/<instance_id>/test_assets/<path>``,
 mirroring where they land in the repository under test.
 
 The images a problem statement links to are mirrored too, at
@@ -32,7 +32,16 @@ from .tasks import TASKS_DIR, load_task, task_dirs
 TIMEOUT = 60
 PROBLEM_ASSETS_DIR = "problem_assets"
 # a dead url often answers 200 with a login or error page, so check what arrived
-IMAGE_MAGIC = (b"\x89PNG", b"\xff\xd8", b"GIF8", b"RIFF", b"<svg", b"\x00\x00\x01\x00")
+IMAGE_MAGIC = (
+    b"\x89PNG",
+    b"\xff\xd8",
+    b"GIF8",
+    b"RIFF",
+    b"<svg",
+    b"\x00\x00\x01\x00",
+    b"II*\x00",  # little-endian TIFF
+    b"MM\x00*",  # big-endian TIFF
+)
 
 
 # the kinds the harness stages into the container, and where they are kept
@@ -125,3 +134,7 @@ def main() -> None:
     print(f"fetched {fetched}, already present {skipped}, failed {len(failed)}")
     for line in failed:
         print(f"  {line}")
+
+
+if __name__ == "__main__":
+    main()

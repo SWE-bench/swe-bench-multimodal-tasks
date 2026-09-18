@@ -98,22 +98,25 @@ python2 -V
 EOF_727a9afa5b25
 
 
-RUN <<EOF_4e18a89d8b81
+RUN <<EOF_b65fb4fde9dd
 #!/bin/bash
 set -euxo pipefail
 git clone -o origin https://github.com/GoogleChrome/lighthouse /testbed
 cd /testbed
 git reset --hard 4a63f3cea271bd0f209fbc648dd3612d685b31ab
 git remote remove origin
-TARGET_TIMESTAMP=$(git show -s --format=%ci 4a63f3cea271bd0f209fbc648dd3612d685b31ab)
-TARGET_EPOCH=$(git show -s --format=%ct 4a63f3cea271bd0f209fbc648dd3612d685b31ab)
-for tag in $(git tag -l); do TAG_EPOCH=$(git log -1 --format=%ct "$tag" 2>/dev/null || echo 0); if [ "${TAG_EPOCH:-0}" -gt "$TARGET_EPOCH" ]; then git tag -d "$tag" >/dev/null 2>&1 || true; fi; done
+BASE_COMMIT=$(git rev-parse 4a63f3cea271bd0f209fbc648dd3612d685b31ab^{commit})
+for tag in $(git tag -l); do TAG_COMMIT=$(git rev-parse -q --verify "$tag^{commit}" 2>/dev/null || true); if [ -z "$TAG_COMMIT" ] || ! git merge-base --is-ancestor "$TAG_COMMIT" "$BASE_COMMIT"; then git tag -d "$tag" >/dev/null 2>&1 || true; fi; done
 git branch | grep -v '^\*' | xargs -r git branch -D || true
+rm -f .git/ORIG_HEAD .git/FETCH_HEAD
 git reflog expire --expire=now --all
 git gc --prune=now --aggressive
-AFTER_TIMESTAMP=$(date -d "$TARGET_TIMESTAMP + 1 second" '+%Y-%m-%d %H:%M:%S')
-COMMIT_COUNT=$(git log --oneline --all --since="$AFTER_TIMESTAMP" | wc -l)
-[ "$COMMIT_COUNT" -eq 0 ] || exit 1
+EXTRA_REF_COMMITS=$(git rev-list --all --not "$BASE_COMMIT" | wc -l)
+[ "$EXTRA_REF_COMMITS" -eq 0 ] || exit 1
+EXTRA_STORED_COMMITS=$(comm -23 <(git cat-file --batch-all-objects --batch-check="%(objecttype) %(objectname)" | awk '$1 == "commit" {print $2}' | sort) <(git rev-list "$BASE_COMMIT" | sort) | wc -l)
+[ "$EXTRA_STORED_COMMITS" -eq 0 ] || exit 1
+UNREACHABLE_OBJECTS=$(git fsck --unreachable --no-reflogs 2>/dev/null | wc -l)
+[ "$UNREACHABLE_OBJECTS" -eq 0 ] || exit 1
 chmod -R 777 /testbed
 cd - || true
 cd /testbed
@@ -122,7 +125,7 @@ source $NVM_DIR/nvm.sh
 npm install
 npm run install-all
 chmod -R 777 /testbed
-EOF_4e18a89d8b81
+EOF_b65fb4fde9dd
 
 
 COPY ["problem_assets", "/problem_assets"]

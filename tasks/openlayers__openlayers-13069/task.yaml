@@ -12,6 +12,10 @@ image_assets:
     url: https://raw.githubusercontent.com/openlayers/openlayers/04ac30009b7a6e459b27792677159268509fa340/test/rendering/cases/cog-math/expected.png
   - path: test/rendering/cases/cog-stats/expected.png
     url: https://raw.githubusercontent.com/openlayers/openlayers/04ac30009b7a6e459b27792677159268509fa340/test/rendering/cases/cog-stats/expected.png
+  - path: test/rendering/data/raster/sentinel-b04.tif
+    url: https://raw.githubusercontent.com/openlayers/openlayers/04ac30009b7a6e459b27792677159268509fa340/test/rendering/data/raster/sentinel-b04.tif
+  - path: test/rendering/data/raster/sentinel-b08.tif
+    url: https://raw.githubusercontent.com/openlayers/openlayers/04ac30009b7a6e459b27792677159268509fa340/test/rendering/data/raster/sentinel-b08.tif
 instance_id: openlayers__openlayers-13069
 log_parser: parse_log_openlayers
 repo: openlayers/openlayers

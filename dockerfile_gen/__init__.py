@@ -1,9 +1,14 @@
 import json
 import re
+import shlex
 from argparse import ArgumentParser
 from pathlib import Path
 
 from .constants import (
+    CARBON_ACHECKER_ARCHIVE,
+    CARBON_ACHECKER_ARCHIVE_PATH,
+    CARBON_ACHECKER_OFFLINE_PORT,
+    CARBON_ACHECKER_OFFLINE_ROOT,
     CONTAINER_WORKDIR,
     PINNED_CHROME_VERSION,
     END_TEST_OUTPUT,
@@ -161,6 +166,7 @@ def make_repo_script_list(specs, repo, base_commit, instance_id=None):
     ]
     commands.append("source $NVM_DIR/nvm.sh")
     commands.extend(INSTANCE_OVERRIDES.get(instance_id, {}).get("install_pre", []))
+    post_install_commands = []
     override_install = INSTANCE_OVERRIDES.get(instance_id, {}).get("install")
     if override_install:
         commands.extend(override_install)
@@ -168,6 +174,23 @@ def make_repo_script_list(specs, repo, base_commit, instance_id=None):
         install_commands = specs["install"]
         if isinstance(install_commands, str):
             install_commands = [install_commands]
+        if repo == "carbon-design-system/carbon":
+            split_at = next(
+                i
+                for i, command in enumerate(install_commands)
+                if command.startswith(
+                    f"mkdir -p {CARBON_ACHECKER_OFFLINE_ROOT}/archives/"
+                )
+            )
+            post_install_commands = [
+                f"cd {CONTAINER_WORKDIR}",
+                *install_commands[split_at:],
+                "rm -f .achecker.yml",
+            ]
+            install_commands = [
+                *install_commands[:split_at],
+                f"echo 'ruleArchive: {CARBON_ACHECKER_ARCHIVE}' > .achecker.yml",
+            ]
         commands.extend(install_commands)
     if "build" in specs:
         build_commands = specs["build"]
@@ -179,7 +202,10 @@ def make_repo_script_list(specs, repo, base_commit, instance_id=None):
     # but the eval script runs the tests as chromeuser. chmod again at the very end so
     # those directories stay writable.
     commands.append(f"chmod -R 777 {CONTAINER_WORKDIR}")
-    return make_heredoc_run_command(commands)
+    layers = [make_heredoc_run_command(commands)]
+    if post_install_commands:
+        layers.append(make_heredoc_run_command(post_install_commands))
+    return "\n".join(layers)
 
 
 def _strip_binary_diffs(patch_text: str) -> tuple[str, list[str]]:
@@ -214,28 +240,20 @@ def _strip_binary_diffs(patch_text: str) -> tuple[str, list[str]]:
 
 
 def _make_image_download_script(instance: dict, task_dir=None) -> str:
-    """Generate a RUN block to download image_assets into staging dirs at build time."""
+    """Download only unarchived problem images during image construction.
+
+    Binary grading fixtures are never added here; the evaluator stages their local
+    mirrors after the solver submits a patch.
+    """
     image_assets = instance.get("image_assets")
     if not image_assets:
         return ""
     if isinstance(image_assets, str):
         image_assets = json.loads(image_assets) if image_assets else {}
 
-    commands = ["mkdir -p /swebench/image_assets"]
-
-    # test_patch images → /swebench/image_assets/test_patch/{repo_relative_path}
-    test_patch_assets = image_assets.get("test_patch", [])
-    if hasattr(test_patch_assets, "tolist"):
-        test_patch_assets = test_patch_assets.tolist()
-    for item in test_patch_assets:
-        if isinstance(item, str):
-            item = json.loads(item)
-        path = item.get("path", "")
-        url = item.get("url", "")
-        if path and url:
-            dest = f"/swebench/image_assets/test_patch/{path}"
-            commands.append(f"mkdir -p $(dirname '{dest}')")
-            commands.append(f"curl -fsSL -o '{dest}' '{url}' || true")
+    # Binary patch fixtures are intentionally never placed in the solver-visible
+    # image. The evaluator stages their local test_assets copies after submission.
+    commands = []
 
     # problem_statement images land in /problem_assets via COPY. Only the handful
     # with no archived copy are still fetched, into the same directory under the
@@ -245,7 +263,7 @@ def _make_image_download_script(instance: dict, task_dir=None) -> str:
         commands.append("mkdir -p /problem_assets")
         commands.append(f"curl -fsSL -o '{dest}' '{url}' || true")
 
-    if len(commands) <= 1:
+    if not commands:
         return ""
     return make_heredoc_run_command(commands)
 
@@ -362,7 +380,23 @@ def _get_test_cmds_openlayers(instance: dict) -> list:
     XVFB = 'xvfb-run --server-args="-screen 0 1280x1024x24 -ac :99"'
     SSL_LEGACY = "NODE_OPTIONS=--openssl-legacy-provider"
     cmds = []
-    for test_path in _get_test_paths(instance):
+    rendering_cases = set()
+    spec_paths = set()
+    test_paths = _get_test_paths(instance)
+    test_paths += instance.get("FAIL_TO_PASS", [])
+    test_paths += instance.get("PASS_TO_PASS", [])
+    for test_path in sorted(set(test_paths)):
+        if test_path.startswith("./cases/"):
+            rendering_cases.add(test_path.split("/")[2])
+            continue
+        # OpenLayers 6.5+ moved Karma specs below test/browser/spec and removed
+        # test/index_test.js. Treat these as exact spec paths instead of invoking
+        # the broad test-browser suite.
+        if test_path.startswith("test/browser/spec/") and test_path.endswith(
+            ".test.js"
+        ):
+            spec_paths.add(test_path)
+            continue
         test_type = test_path.split('/')[1] if '/' in test_path else ""
         if test_type == "browser":
             if instance.get("version") in ['6.9', '6.12', '6.14', '7.0', '7.1', '7.2', '7.3', '7.5']:
@@ -370,42 +404,123 @@ def _get_test_cmds_openlayers(instance: dict) -> list:
             else:
                 cmds.append(f'{SET_PUPPETEER} {XVFB} su chromeuser -c "npm run test-browser"')
         elif test_type == "rendering":
-            # v7.4: use Puppeteer's bundled Chromium 115 via Xvfb (not --headless,
-            # which uses SwiftShader and hangs in Docker). --force continues past failures.
-            if instance.get("version") in ['7.4']:
-                PENV = "CI=true PUPPETEER_CACHE_DIR=/home/chromeuser/.cache/puppeteer"
-                cmds.append(
-                    f'{PENV} {XVFB} su chromeuser -c "'
-                    f'{PENV} npm run build-full && {PENV} '
-                    f'node test/rendering/test.js --force --headless --log-level info"'
-                )
-            else:
-                # CI=1 makes puppeteer headless with --no-sandbox, which is the config
-                # upstream used to generate the expected.png baselines; without it
-                # rendering is ~97% off. --no-sandbox also removes the need for an
-                # unprivileged user, and running as root lets the harness write
-                # actual.png into the root-owned /testbed. --log-level info surfaces
-                # passing cases ("<case>': ok"), the only positive evidence that an
-                # all-passing run actually executed, since the parser records only
-                # failures.
-                # --headless explicitly: CI=1 only implies headless on the newer
-                # harness; v5.x hardcodes `headless: false` and CI-gates just the
-                # sandbox args, leaving rendering ~98% off under Xvfb.
-                cmds.append(
-                    f'CI=1 {SET_PUPPETEER} {XVFB} '
-                    f'npm run test-rendering -- --headless --log-level info'
-                )
+            match = re.search(r"(?:^|/)cases/([^/]+)", test_path)
+            if match:
+                rendering_cases.add(match.group(1))
+            continue
         elif test_type == "spec":
-            cmds.append(f'{SET_PUPPETEER} {XVFB} su chromeuser -c "npm run karma -- --single-run --log-level error"')
+            if test_path.endswith(".test.js"):
+                spec_paths.add(test_path)
+            continue
         elif test_type == "node":
             cmds.append("npm run test-node")
         else:
+            # Human-readable expected test names are graded from the test file selected
+            # by the patch; they are not executable paths themselves.
+            if not test_path.startswith("test/"):
+                continue
             cmds.append("npm run test")
-        if test_type in ['spec', 'rendering', 'browser'] and instance.get('version') in [
+        if test_type == 'browser' and instance.get('version') in [
             '6.1', '6.2', '6.3', '6.4', '6.5', '6.5.1', '6.6',
             '4.3', '4.4', '4.5', '4.6', '5.1', '5.2', '5.3'
         ]:
             cmds[-1] = f"{SSL_LEGACY} {cmds[-1]}"
+
+    if spec_paths:
+        entry_lines = " ".join(
+            shlex.quote(f"require('./{path.removeprefix('test/')}');")
+            for path in sorted(spec_paths)
+        )
+        runner = (
+            f'{SET_PUPPETEER} {XVFB} su chromeuser -c '
+            '"npm run karma -- --single-run --log-level error"'
+        )
+        if instance.get("version") in [
+            "6.1", "6.2", "6.3", "6.4", "6.5", "6.5.1", "6.6",
+            "4.3", "4.4", "4.5", "4.6", "5.1", "5.2", "5.3",
+        ]:
+            runner = f"{SSL_LEGACY} {runner}"
+        backup = "/tmp/swebench-openlayers-index-test.js"
+        modern_paths = sorted(
+            path.removeprefix("test/browser/")
+            for path in spec_paths
+            if path.startswith("test/browser/")
+        )
+        legacy_paths = sorted(
+            path.removeprefix("test/")
+            for path in spec_paths
+            if path.startswith("test/")
+        )
+        modern_pattern = (
+            modern_paths[0]
+            if len(modern_paths) == 1
+            else "{" + ",".join(modern_paths) + "}"
+        )
+        legacy_pattern = (
+            legacy_paths[0]
+            if len(legacy_paths) == 1
+            else "{" + ",".join(legacy_paths) + "}"
+        )
+        modern_config = (
+            "KARMA_CONFIG=test/browser/karma.config.cjs; "
+            '[ -f "$KARMA_CONFIG" ] || KARMA_CONFIG=test/browser/karma.config.js; '
+            '[ -f "$KARMA_CONFIG" ] || KARMA_CONFIG=test/karma.config.js; '
+            "KARMA_BACKUP=/tmp/swebench-openlayers-karma-config; "
+            'if [ ! -f "$KARMA_CONFIG" ]; then '
+            'echo "OpenLayers Karma config not found" >&2; OPENLAYERS_CONFIG_STATUS=2; '
+            'else cp "$KARMA_CONFIG" "$KARMA_BACKUP"; '
+            "node -e 'const fs=require(\"fs\");const p=process.argv[1],"
+            "modern=process.argv[2],legacy=process.argv[3],"
+            "source=fs.readFileSync(p,\"utf8\");let "
+            "updated=source.replace(/spec\\/\\*\\*\\/\\*\\.test\\.js/g,modern);"
+            "if(updated===source)updated=source.replace(/\\*\\*\\/\\*\\.test\\.js/g,legacy);"
+            "if(updated===source)process.exit(2);fs.writeFileSync(p,updated)' "
+            f'"$KARMA_CONFIG" {shlex.quote(modern_pattern)} '
+            f'{shlex.quote(legacy_pattern)}; OPENLAYERS_CONFIG_STATUS=$?; fi; '
+            'if [ "$OPENLAYERS_CONFIG_STATUS" -eq 0 ]; then '
+            f"{runner}; OPENLAYERS_STATUS=$?; "
+            "else OPENLAYERS_STATUS=$OPENLAYERS_CONFIG_STATUS; fi; "
+            'if [ -f "$KARMA_BACKUP" ]; then cp "$KARMA_BACKUP" "$KARMA_CONFIG"; fi; '
+            'rm -f "$KARMA_BACKUP"; '
+            '(exit "$OPENLAYERS_STATUS")'
+        )
+        cmds.append(
+            "if [ -f test/index_test.js ]; then "
+            f"cp test/index_test.js {backup}; "
+            f"printf '%s\\n' {entry_lines} > test/index_test.js; "
+            f"{runner}; OPENLAYERS_STATUS=$?; "
+            f"cp {backup} test/index_test.js; rm -f {backup}; "
+            '(exit "$OPENLAYERS_STATUS"); '
+            f"else {modern_config}; fi"
+        )
+
+    if rendering_cases:
+        case_pattern = "|".join(
+            re.escape(name) for name in sorted(rendering_cases)
+        )
+        match_pattern = rf"(?:^|/)cases/(?:{case_pattern})/main\.js$"
+        # v7.4: use Puppeteer's bundled Chromium 115 via Xvfb (not --headless,
+        # which uses SwiftShader and hangs in Docker). --force continues past failures.
+        if instance.get("version") == "7.4":
+            penv = "CI=true PUPPETEER_CACHE_DIR=/home/chromeuser/.cache/puppeteer"
+            cmds.append(
+                f'{penv} {XVFB} su chromeuser -c "'
+                f'{penv} npm run build-full && {penv} '
+                "node test/rendering/test.js --force --headless --log-level info "
+                f"--match '{match_pattern}'\""
+            )
+        else:
+            command = (
+                f'CI=1 {SET_PUPPETEER} {XVFB} '
+                "npm run test-rendering -- --headless --log-level info "
+                f"--match {json.dumps(match_pattern)}"
+            )
+            if instance.get('version') in [
+                '6.1', '6.2', '6.3', '6.4', '6.5', '6.5.1', '6.6',
+                '4.3', '4.4', '4.5', '4.6', '5.1', '5.2', '5.3'
+            ]:
+                command = f"{SSL_LEGACY} {command}"
+            cmds.append(command)
     return sorted(set(cmds))
 
 
@@ -468,10 +583,19 @@ def _get_test_cmds_carbon(instance: dict) -> list:
 def _get_test_cmds_scratch_gui(instance: dict) -> list:
     test_prefix = MAP_REPO_VERSION_TO_SPECS_JS[instance['repo']][instance['version']]["test_cmd"]
     cmds = []
-    for test_path in _get_test_paths(instance):
-        if "__snapshots__" in test_path:
-            test_path = test_path.split("__snapshots__")[0]
-        cmds.append(f"{test_prefix} {test_path}")
+    # Scratch's broad suite includes an ungraded Sauce Labs smoke test that attempts
+    # external network access. Run exactly the patched and graded unit-test paths.
+    test_paths = instance.get("FAIL_TO_PASS", []) + instance.get("PASS_TO_PASS", [])
+    for test_path in sorted(set(test_paths)):
+        if "/__snapshots__/" in test_path and test_path.endswith(".snap"):
+            test_path = test_path.replace("/__snapshots__", "")[: -len(".snap")]
+        if not re.search(r"^test/unit/.+\.(?:js|jsx|ts|tsx)$", test_path):
+            continue
+        # Jest treats repeated array-valued options greedily in these historic
+        # versions.  A trailing bare path can therefore become another ignore
+        # pattern and silently fall back to the broad suite.  The boolean selector
+        # gives the following path an unambiguous meaning on every supported Jest.
+        cmds.append(f"{test_prefix} --runTestsByPath {shlex.quote(test_path)}")
     return sorted(set(cmds))
 
 
@@ -499,7 +623,11 @@ def _get_test_cmds_calypso(instance: dict) -> list:
 
 
 def _get_test_cmds_lighthouse(instance: dict) -> list:
-    cmds = []
+    # Keep each runner invocation to one command. Podman may deliver stdout and stderr
+    # in separate batches, so several JSON-reporter processes can otherwise appear in
+    # a different order than their shell traces and the grader can miss the first file.
+    grouped_paths: dict[str, set[str]] = {}
+    standalone = set()
     SUBDIRS = ["report", "cli", "report", "treemap", "viewer"]
     LH_PREFIX = "lighthouse-"
     for test_path in _get_test_paths(instance):
@@ -514,18 +642,26 @@ def _get_test_cmds_lighthouse(instance: dict) -> list:
         parent_folder = test_path.split("/")[0]
         if instance.get("version") in ['9.5', '10.0', '10.2']:
             if parent_folder == "flow-report":
-                cmds.append("yarn unit-flow")
+                standalone.add("yarn unit-flow")
             elif parent_folder in SUBDIRS + [LH_PREFIX + x for x in SUBDIRS]:
                 if parent_folder.startswith(LH_PREFIX):
                     parent_folder = parent_folder[len(LH_PREFIX):]
-                cmds.append(f"yarn unit-{parent_folder} {test_path}")
+                grouped_paths.setdefault(f"yarn unit-{parent_folder}", set()).add(
+                    test_path
+                )
             else:
-                cmds.append(f"yarn mocha {test_path}")
+                grouped_paths.setdefault("yarn mocha", set()).add(test_path)
         elif '3.0' <= str(instance.get("version", "")) <= '8.6':
-            cmds.append(f"yarn jest --no-colors {test_path}")
+            grouped_paths.setdefault("yarn jest --no-colors", set()).add(test_path)
         else:
-            cmds.append(f"./node_modules/.bin/mocha --reporter json {test_path}")
-    return sorted(set(cmds))
+            grouped_paths.setdefault(
+                "./node_modules/.bin/mocha --reporter json", set()
+            ).add(test_path)
+    commands = standalone | {
+        f"{prefix} {' '.join(sorted(paths))}"
+        for prefix, paths in grouped_paths.items()
+    }
+    return sorted(commands)
 
 
 def _get_test_cmds_prettier(instance: dict) -> list:
@@ -551,8 +687,7 @@ _MAP_REPO_TO_TEST_CMDS = {
     "openlayers/openlayers": _get_test_cmds_openlayers,
     "prettier/prettier": _get_test_cmds_prettier,
     "PrismJS/prism": _get_test_cmds_prism,
-    # scratch-gui: static test_cmd runs all jest tests, works fine.
-    # Per-instance cmd is too narrow (misses F2P tests not in test_patch).
+    "scratchfoundation/scratch-gui": _get_test_cmds_scratch_gui,
     # react-pdf: static test_cmd runs the whole monorepo, which is what its
     # P2P lists need -- they span packages the patched one does not contain.
 }
@@ -574,6 +709,88 @@ def _get_test_commands(instance: dict, specs: dict) -> str:
     return test_cmd
 
 
+def _carbon_achecker_server_commands() -> list[str]:
+    """Start the image-bundled accessibility-checker rule server.
+
+    Carbon versions in this benchmark span the legacy @ibma/aat API and the current
+    accessibility-checker API. Both insist on HTTP, and browser-like Jest environments
+    enforce CORS, so serve the pinned engine over loopback. Exact-path aliases adapt the
+    hash-verified ACE engine to the legacy AWE filenames without weakening the server's
+    traversal guard.
+    """
+    engine_base = f"/archives/{CARBON_ACHECKER_ARCHIVE_PATH}/js/"
+    server_js = (
+        'var fs=require("fs"),http=require("http"),path=require("path"),'
+        'url=require("url");'
+        f'var root="{CARBON_ACHECKER_OFFLINE_ROOT}",'
+        f'port={CARBON_ACHECKER_OFFLINE_PORT},engineBase="{engine_base}";'
+        "http.createServer(function(request,response){"
+        'response.setHeader("Access-Control-Allow-Origin","*");'
+        'var pathname=decodeURIComponent(url.parse(request.url).pathname);'
+        'if(pathname==="/tools/api/pub/meter/v2"){response.statusCode=204;'
+        'response.end();return;}'
+        "var legacyBrowserEngine=false;"
+        "if(pathname===engineBase+\"awe-node.js\"){"
+        'pathname=engineBase+"ace-node.js";}'
+        "else if(pathname===engineBase+\"awe.js\"){"
+        'pathname=engineBase+"ace.js";legacyBrowserEngine=true;}'
+        'var filename=path.resolve(root,"."+pathname);'
+        'if(filename.indexOf(root+path.sep)!==0){response.statusCode=403;'
+        'response.end("forbidden");return;}'
+        'if(/\\.json$/.test(filename)){response.setHeader("Content-Type",'
+        '"application/json");}else if(/\\.js$/.test(filename)){'
+        'response.setHeader("Content-Type","application/javascript");}'
+        "if(legacyBrowserEngine){fs.readFile(filename,function(error,contents){"
+        'if(error){response.statusCode=404;response.end("not found");return;}'
+        'response.end(Buffer.concat([contents,Buffer.from('
+        '"\\n;window.IBMAwe=ace;\\n")]));});return;}'
+        "var stream=fs.createReadStream(filename);"
+        'stream.on("error",function(){if(!response.headersSent){'
+        'response.statusCode=404;}response.end("not found");});'
+        "stream.pipe(response);"
+        '}).listen(port,"127.0.0.1");'
+    )
+    log = "/tmp/achecker-offline-server.log"
+    return [
+        "rm -rf -- .achecker.yml .aat.yml && "
+        f"cp {CARBON_ACHECKER_OFFLINE_ROOT}/.achecker.yml .achecker.yml && "
+        f"cp {CARBON_ACHECKER_OFFLINE_ROOT}/.achecker.yml .aat.yml",
+        (
+            "for checker_dir in node_modules/@ibma/aat "
+            "node_modules/accessibility-checker "
+            "config/jest-config-carbon/node_modules/@ibma/aat "
+            "config/jest-config-carbon/node_modules/accessibility-checker; do "
+            "if [ -d \"$checker_dir\" ]; then "
+            "find \"$checker_dir\" -type f "
+            "\\( -name AATMetricsLogger.js -o -name ACMetricsLogger.js \\) "
+            "-exec sed -i "
+            f"-e 's#http:/[/]ibmac96.austin.ibm.com/cgi-bin/log-cio/log.py#"
+            f"http://127.0.0.1:{CARBON_ACHECKER_OFFLINE_PORT}/tools/api/pub/meter/v2#g' "
+            f"-e 's#https:/[/]able.ibm.com/tools#http://127.0.0.1:"
+            f"{CARBON_ACHECKER_OFFLINE_PORT}/tools#g' {{}} +; fi; done"
+        ),
+        (
+            'export NO_PROXY="${NO_PROXY:+$NO_PROXY,}127.0.0.1,localhost" '
+            'no_proxy="${no_proxy:+$no_proxy,}127.0.0.1,localhost"'
+        ),
+        f"node -e '{server_js}' > {log} 2>&1 &",
+        "ACHECKER_OFFLINE_PID=$!",
+        "trap 'kill $ACHECKER_OFFLINE_PID 2>/dev/null || true' EXIT",
+        "ACHECKER_OFFLINE_READY=0",
+        (
+            "for _ in {1..50}; do "
+            "if curl --noproxy '*' -fsS "
+            f"http://127.0.0.1:{CARBON_ACHECKER_OFFLINE_PORT}/archives.json "
+            "> /dev/null 2>&1; then ACHECKER_OFFLINE_READY=1; break; fi; "
+            "sleep 0.1; done"
+        ),
+        (
+            '[ "$ACHECKER_OFFLINE_READY" -eq 1 ] || '
+            f'{{ cat {log}; exit 1; }}'
+        ),
+    ]
+
+
 # ── Eval script generation ─────────────────────────────────────────────
 
 
@@ -584,11 +801,15 @@ def _get_eval_script(instance: dict) -> str:
     base_commit = instance["base_commit"]
     test_patch = instance.get("test_patch", "")
     specs = MAP_REPO_VERSION_TO_SPECS_JS[repo][version]
+    offline_grading = instance.get("split") == "test"
 
     test_command = _get_test_commands(instance, specs)
 
     eval_commands = [
         "#!/bin/bash",
+        # Podman can otherwise batch the two Docker exec streams independently,
+        # separating a command trace from its result and confusing log parsers.
+        "exec 2>&1",
         "set -uxo pipefail",
         f"cd {CONTAINER_WORKDIR}",
         f"git config --global --add safe.directory {CONTAINER_WORKDIR}",
@@ -597,6 +818,12 @@ def _get_eval_script(instance: dict) -> str:
         "git show",
         f"git -c core.fileMode=false diff {base_commit}",
     ]
+    if offline_grading:
+        eval_commands.insert(
+            6,
+            "export npm_config_offline=true npm_config_audit=false "
+            "npm_config_fund=false YARN_ENABLE_NETWORK=0",
+        )
 
     # Carbon: accessibility-checker races on mkdir for engine dir when parallel workers
     # all try to download rules simultaneously. Pre-create the dir to avoid EEXIST.
@@ -610,7 +837,7 @@ def _get_eval_script(instance: dict) -> str:
 
     if test_patch:
         # Strip binary diffs — they can't be applied via heredoc
-        clean_test_patch, binary_files = _strip_binary_diffs(test_patch)
+        clean_test_patch, _ = _strip_binary_diffs(test_patch)
 
         test_files = re.findall(r"diff --git a/.* b/(.*)", test_patch)
         # Separate existing files (can git checkout) from new files (need rm)
@@ -643,49 +870,60 @@ def _get_eval_script(instance: dict) -> str:
             )
             eval_commands.append(apply_test_patch_command)
 
-        # Restore binary files from build-time staging dir
-        if binary_files:
-            eval_commands.append(
-                "test -d /swebench/image_assets/test_patch && "
-                "cp -a /swebench/image_assets/test_patch/. /testbed/ 2>/dev/null || true"
-            )
-
-    # Lighthouse v1.x: gold patch may add new modules that need linking
-    if repo == "GoogleChrome/lighthouse" and version and version.startswith("1."):
-        eval_commands.append("npm run install-all 2>/dev/null || true")
+        # Binary files are injected by the evaluator only after the solver submits.
+        # Never accept the legacy build-time staging path: its presence means the
+        # solver-visible image leaked hidden grading material.
 
     # Next v1.27: Cypress/Vite tests run as chromeuser; ensure writable dirs
     if repo == "alibaba-fusion/next" and version == "1.27":
         eval_commands.append("chmod -R a+w /testbed/node_modules 2>/dev/null || true")
 
-    # OL v7.4: rendering tests need Puppeteer's bundled Chromium (115.0.5790.98)
-    # for pixel-exact match with expected.png. Download directly (install.js hangs).
-    # Puppeteer 20.9.0 expects: $CACHE/chrome/linux-115.0.5790.98/chrome-linux64/chrome
-    if repo == "openlayers/openlayers" and version == "7.4":
-        cache = "/home/chromeuser/.cache/puppeteer"
-        chrome_dir = f"{cache}/chrome/linux-115.0.5790.98"
-        eval_commands.extend([
-            f"mkdir -p {chrome_dir}",
-            f"wget -q https://storage.googleapis.com/chrome-for-testing-public/115.0.5790.98/linux64/chrome-linux64.zip -O /tmp/chrome.zip",
-            f"python3 -c \"import zipfile; zipfile.ZipFile('/tmp/chrome.zip').extractall('{chrome_dir}')\"",
-            "rm /tmp/chrome.zip",
-            f"chmod -R 755 {chrome_dir}/chrome-linux64",
-            f"chown -R chromeuser:chromeuser {cache}",
-        ])
-
-    # a patch that changes package.json leaves node_modules stale; without the skip
-    # guard the reinstall blocks forever fetching Chromium
-    eval_commands.append(
-        'if ! git diff --quiet HEAD -- package.json 2>/dev/null; then '
-        'echo "package.json changed by patch; re-syncing dependencies"; '
-        "export PUPPETEER_SKIP_DOWNLOAD=true PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true; "
-        "if [ -f yarn.lock ]; then timeout 900 yarn install --silent > /dev/null 2>&1 || true; "
-        "else timeout 900 npm install --silent > /dev/null 2>&1 || true; fi; "
-        "chmod -R a+rX node_modules > /dev/null 2>&1 || true; "
-        "fi"
-    )
+    if offline_grading:
+        # A patch that changes package.json can leave node_modules stale. Test-split
+        # grading is deliberately network-isolated: task images must pre-cache every
+        # needed package, and this step may only consume those caches. Fail explicitly
+        # when an image is incomplete instead of hiding a failed install.
+        eval_commands.append(
+            'if ! git -c core.fileMode=false diff --quiet HEAD -- package.json 2>/dev/null; then '
+            'echo "package.json changed by patch; re-syncing from the image cache"; '
+            "export PUPPETEER_SKIP_DOWNLOAD=true PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true "
+            "CHROMEDRIVER_SKIP_DOWNLOAD=true "
+            "npm_config_offline=true npm_config_audit=false npm_config_fund=false "
+            "YARN_ENABLE_NETWORK=0; "
+            "if [ -d /run/swebench-offline/npm ]; then "
+            "export npm_config_cache=/run/swebench-offline/npm; fi; "
+            "if [ -d /run/swebench-offline/yarn ]; then "
+            "export YARN_CACHE_FOLDER=/run/swebench-offline/yarn; fi; "
+            "if [ -f yarn.lock ]; then "
+            "case \"$(yarn --version)\" in 0.*|1.*) "
+            "timeout 900 yarn install --offline --frozen-lockfile --ignore-scripts "
+            "--non-interactive --silent > /dev/null 2>&1;; "
+            "*) timeout 900 yarn install --immutable-cache --mode=skip-builds "
+            "> /dev/null 2>&1;; esac; "
+            "else timeout 900 npm install --offline --legacy-peer-deps --ignore-scripts "
+            "--no-audit --no-fund --silent "
+            "> /dev/null 2>&1; fi || "
+            '{ echo "offline dependency re-sync failed: image cache is incomplete" >&2; exit 1; }; '
+            "chmod -R a+rX node_modules > /dev/null 2>&1 || true; "
+            "fi"
+        )
+    else:
+        # Preserve the connected dev/deprecated workflow; its dependency changes are
+        # outside the test-split offline contract and do not have private cache bundles.
+        eval_commands.append(
+            'if ! git diff --quiet HEAD -- package.json 2>/dev/null; then '
+            'echo "package.json changed by patch; re-syncing dependencies"; '
+            "export PUPPETEER_SKIP_DOWNLOAD=true PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true; "
+            "if [ -f yarn.lock ]; then "
+            "timeout 900 yarn install --silent > /dev/null 2>&1 || true; "
+            "else timeout 900 npm install --silent > /dev/null 2>&1 || true; fi; "
+            "chmod -R a+rX node_modules > /dev/null 2>&1 || true; fi"
+        )
 
     eval_commands += INSTANCE_OVERRIDES.get(instance["instance_id"], {}).get("eval_pre", [])
+
+    if repo == "carbon-design-system/carbon":
+        eval_commands += _carbon_achecker_server_commands()
 
     eval_commands += [
         f": '{START_TEST_OUTPUT}'",

@@ -101,41 +101,40 @@ python2 -V
 EOF_55f960f4ac15
 
 
-RUN <<EOF_f9a2f07faa54
+RUN <<EOF_bddf38dcec55
 #!/bin/bash
 set -euxo pipefail
 (mkdir -p /testbed && cd /testbed && git init -q . && git remote add origin https://github.com/openlayers/openlayers && git fetch -q --depth 1 origin 78a22e75102a452ed15aadaf194ad931e93a0205 && git reset -q --hard FETCH_HEAD) || (rm -rf /testbed && git clone -o origin https://github.com/openlayers/openlayers /testbed)
 cd /testbed
 git reset --hard 78a22e75102a452ed15aadaf194ad931e93a0205
 git remote remove origin
-TARGET_TIMESTAMP=$(git show -s --format=%ci 78a22e75102a452ed15aadaf194ad931e93a0205)
-TARGET_EPOCH=$(git show -s --format=%ct 78a22e75102a452ed15aadaf194ad931e93a0205)
-for tag in $(git tag -l); do TAG_EPOCH=$(git log -1 --format=%ct "$tag" 2>/dev/null || echo 0); if [ "${TAG_EPOCH:-0}" -gt "$TARGET_EPOCH" ]; then git tag -d "$tag" >/dev/null 2>&1 || true; fi; done
+BASE_COMMIT=$(git rev-parse 78a22e75102a452ed15aadaf194ad931e93a0205^{commit})
+for tag in $(git tag -l); do TAG_COMMIT=$(git rev-parse -q --verify "$tag^{commit}" 2>/dev/null || true); if [ -z "$TAG_COMMIT" ] || ! git merge-base --is-ancestor "$TAG_COMMIT" "$BASE_COMMIT"; then git tag -d "$tag" >/dev/null 2>&1 || true; fi; done
 git branch | grep -v '^\*' | xargs -r git branch -D || true
+rm -f .git/ORIG_HEAD .git/FETCH_HEAD
 git reflog expire --expire=now --all
 git gc --prune=now --aggressive
-AFTER_TIMESTAMP=$(date -d "$TARGET_TIMESTAMP + 1 second" '+%Y-%m-%d %H:%M:%S')
-COMMIT_COUNT=$(git log --oneline --all --since="$AFTER_TIMESTAMP" | wc -l)
-[ "$COMMIT_COUNT" -eq 0 ] || exit 1
+EXTRA_REF_COMMITS=$(git rev-list --all --not "$BASE_COMMIT" | wc -l)
+[ "$EXTRA_REF_COMMITS" -eq 0 ] || exit 1
+EXTRA_STORED_COMMITS=$(comm -23 <(git cat-file --batch-all-objects --batch-check="%(objecttype) %(objectname)" | awk '$1 == "commit" {print $2}' | sort) <(git rev-list "$BASE_COMMIT" | sort) | wc -l)
+[ "$EXTRA_STORED_COMMITS" -eq 0 ] || exit 1
+UNREACHABLE_OBJECTS=$(git fsck --unreachable --no-reflogs 2>/dev/null | wc -l)
+[ "$UNREACHABLE_OBJECTS" -eq 0 ] || exit 1
 chmod -R 777 /testbed
 cd - || true
 cd /testbed
 git clean -fdxq
 source $NVM_DIR/nvm.sh
+wget -q https://storage.googleapis.com/chrome-for-testing-public/124.0.6367.91/linux64/chrome-linux64.zip
+unzip -q chrome-linux64.zip -d /opt/
+rm chrome-linux64.zip
+rm -f /usr/bin/google-chrome /usr/bin/google-chrome-stable
+printf '#!/bin/bash\nexec /opt/chrome-linux64/chrome --no-sandbox "$@"\n' > /usr/bin/google-chrome
+chmod +x /usr/bin/google-chrome
+cp /usr/bin/google-chrome /usr/bin/google-chrome-stable
 npm install
 chmod -R 777 /testbed
-EOF_f9a2f07faa54
-
-
-RUN <<EOF_236842a7eaf3
-#!/bin/bash
-set -euxo pipefail
-mkdir -p /swebench/image_assets
-mkdir -p $(dirname '/swebench/image_assets/test_patch/test/rendering/cases/reproj-tile-no-wrap/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/test/rendering/cases/reproj-tile-no-wrap/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/4601a818c1538b801537755c4d80aa41b382af63/test/rendering/cases/reproj-tile-no-wrap/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/test/rendering/cases/webgl-reproj-no-wrap/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/test/rendering/cases/webgl-reproj-no-wrap/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/4601a818c1538b801537755c4d80aa41b382af63/test/rendering/cases/webgl-reproj-no-wrap/expected.png' || true
-EOF_236842a7eaf3
+EOF_bddf38dcec55
 
 
 COPY ["problem_assets", "/problem_assets"]

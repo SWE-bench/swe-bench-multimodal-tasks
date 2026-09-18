@@ -1,5 +1,43 @@
 # Changelog
 
+- **[2026-09-17] Harden exact browser-test selection**: OpenLayers' focused Karma
+  runner now supports both the modern `test/browser/karma.config.*` layout and the
+  legacy `test/karma.config.js` layout. Scratch passes declared unit-test files through
+  Jest's explicit `--runTestsByPath` selector, so repeated array-valued ignore options
+  cannot consume a trailing path and accidentally launch the broad suite.
+- **[2026-09-17] Match OpenLayers rendering browsers to Puppeteer**: six rendering
+  images now replace the global Chrome 151 build with the exact Chromium/Chrome for
+  Testing revision declared by their bundled Puppeteer release. This prevents DevTools
+  targets closing before any rendering case starts, without retrying or altering tests.
+- **[2026-09-16] Forward build-only proxies to modern Yarn**: Prettier 3.x uses
+  Yarn Berry, which ignores Docker's standard proxy variables and attempted direct DNS
+  lookups on restricted builders. Its install step now maps those variables to Yarn's
+  process-local proxy settings without persisting proxy configuration in the image.
+- **[2026-09-15] Make Carbon accessibility checks offline**: bundle the pinned
+  Accessibility Checker 3.1.0 Node and browser engines into every Carbon image, verify
+  their hashes at build time, and serve them from a CORS-enabled loopback server during
+  evaluation. The config, engine filenames/browser global, and metrics endpoints support
+  both legacy `@ibma/aat` and the newer 3.1.32+ engine manager. This removes eval-time
+  access to `able.ibm.com`/jsDelivr and the resulting transient
+  `Checker is not a constructor` failures. All 133 Carbon tasks.
+- **[2026-09-15] Remove grading-time package and browser downloads**: test commands no
+  longer repeat build-time installs for Highlight.js, Grommet, or Lighthouse v1; the
+  Chromium 115 binary needed by `openlayers__openlayers-14932` is now installed while
+  building its image. Manifest changes are reconciled only from an offline cache and a
+  missing cache is an explicit infrastructure failure rather than an ignored error.
+- **[2026-09-15] Scope broad browser suites to graded tests**: OpenLayers Karma and
+  rendering runs now select the patched spec/case files, and Scratch runs only declared
+  unit tests. This prevents unrelated browser failures and external smoke tests from
+  hiding whether the target tests actually ran.
+- **[2026-09-15] Stage binary test fixtures from the local mirror**: image builds no
+  longer download hidden grading fixtures from their original URLs or bake them into the
+  solver-visible image. The evaluator injects the archived `test_assets/` only after a
+  patch is submitted. All 109 grading assets used by the 480-task test split are present
+  (106 binary patch files plus three supplemental OpenLayers rendering baselines).
+- **[2026-09-15] Complete the problem-asset mirror**: archive the missing BPMN reference
+  diagram and Marked emoji, and stop classifying a Marked demo hyperlink and a templated
+  Nextzen tile endpoint as problem images. No test-split image now downloads problem
+  context while it is built.
 - **[2026-08-18] Deprecate alibaba-fusion__next-870**: its eval script hangs
   indefinitely and is not interrupted by the harness's 3600s grading timeout, so the
   instance occupies a worker until the job is killed. An earlier run did produce a verdict
@@ -12,7 +50,7 @@
   (the build path only; the eval path already set both names).
 - **[2026-08-14] Full git history for lighthouse**: the depth-1 fetch leaves no tag, so the
   build's `git describe` version stamp failed. Cloning full history restores it; its .git is
-  399MB (48MB after gc), unlike carbon's 7.8GB, and the existing date-based prune + gc still
+  399MB (48MB after gc), unlike carbon's 7.8GB, and the ancestry-based prune + gc still
   guarantees zero future commits. `GoogleChrome__lighthouse-14479`, `-14515`, `-14587`,
   `-14672`, `-14800`, `-15054`, `-15092`, and `-5084` (whose tests read the stamped version).
 - **[2026-08-14] chmod after the git reset, and again after install**: `chmod -R 777` ran
@@ -30,18 +68,6 @@
   env vars and .bin shims are ignored. Added per-instance `docker_specs`/`install` overrides
   so its 10 siblings keep their node versions. `eslint__eslint-17618`.
 
-## Known issues
-
-- `alibaba-fusion__next-4806`, `-4859` build but fail gold eval: Cypress 13.6.1 reports
-  "browser never connected" / "Missing browserCriClient". Chrome launches fine standalone in
-  the image, so the failure is in Cypress's CDP handshake; not diagnosed further.
-- Chrome is installed unpinned from google-chrome-stable, so any rebuild can pick up a Chrome
-  that breaks browser-driven tests. Only the two instances above are pinned today.
-- prism-1853/-2348 and carbon-7350 pass at low eval parallelism but can fail at `-j 10`:
-  markers are emitted as `set -x` traces on stderr while test output is buffered stdout, so
-  the JSON can land outside the Start/End markers. Images are correct; the fix would be
-  `set +x` plus real `echo` markers.
-
 - **[2026-08-13] Run openlayers rendering tests headless as root**: they ran via
   `su chromeuser` with `CI` unset, so puppeteer launched non-headless without
   `--no-sandbox` and rendering came out ~97% off the expected.png baselines; added
@@ -54,7 +80,9 @@
 - **[2026-08-13] Remove future commits reliably when cloning**: the tag prune stopped
   early because a git call inside `git tag -l | while read` consumed the piped stdin,
   leaving 3,729 future commits reachable via tags; switched to a `for` loop plus
-  `git gc --prune=now` and a build-time assertion. All instances.
+  `git gc --prune=now` and build-time assertions. The boundary is graph ancestry, not
+  spoofable commit timestamps, and the image also asserts that no extra commit object
+  remains readable after pruning. All instances.
 - **[2026-08-13] Mirror binary patch assets**: `image_assets` pointed only at
   `raw.githubusercontent.com`, so evaluation depended on that host and nothing fetched
   them at all; the 135 test_patch/patch files now live in `src/assets/<instance_id>/<path>`

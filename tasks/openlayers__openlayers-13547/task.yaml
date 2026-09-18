@@ -7,7 +7,6 @@ image: swebench/sweb.eval.x86_64.openlayers_1776_openlayers-13547:latest
 image_assets:
   patch: []
   problem_statement:
-  - https://tile.nextzen.org/tilezen/terrain/v1/{tilesize}/terrarium/{z}/{x}/{y}.png
   - https://user-images.githubusercontent.com/49240900/162012609-a49c5f87-0efe-4832-8e24-05dd0993291d.png
   test_patch:
   - path: test/rendering/cases/webgl-data-tile-interpolate-gutter/expected.png

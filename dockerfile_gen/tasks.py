@@ -44,6 +44,15 @@ def load_task(task_dir: Path) -> dict:
 
 
 def write_generated(task_dir: Path, dockerfile: str, eval_script: str) -> None:
-    """Overwrite the two derived files in place."""
+    """Overwrite derived files and restrict the container build context.
+
+    Solver images need the Dockerfile and public problem assets only. In particular,
+    hidden tests, gold patches, and binary grading fixtures must never be sent to the
+    image builder, where they could survive in cache metadata or accidental layers.
+    """
     _write(task_dir / "Dockerfile", dockerfile)
     _write(task_dir / "eval.sh", eval_script)
+    _write(
+        task_dir / ".dockerignore",
+        "*\n!Dockerfile\n!problem_assets\n!problem_assets/**\n",
+    )

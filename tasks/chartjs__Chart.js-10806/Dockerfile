@@ -113,22 +113,25 @@ pnpm -v
 EOF_b63450f00529
 
 
-RUN <<EOF_29fa2af80115
+RUN <<EOF_2303b0f244ec
 #!/bin/bash
 set -euxo pipefail
 (mkdir -p /testbed && cd /testbed && git init -q . && git remote add origin https://github.com/chartjs/Chart.js && git fetch -q --depth 1 origin c35d0c6e48ece06b2f420e3804c5f7267820d129 && git reset -q --hard FETCH_HEAD) || (rm -rf /testbed && git clone -o origin https://github.com/chartjs/Chart.js /testbed)
 cd /testbed
 git reset --hard c35d0c6e48ece06b2f420e3804c5f7267820d129
 git remote remove origin
-TARGET_TIMESTAMP=$(git show -s --format=%ci c35d0c6e48ece06b2f420e3804c5f7267820d129)
-TARGET_EPOCH=$(git show -s --format=%ct c35d0c6e48ece06b2f420e3804c5f7267820d129)
-for tag in $(git tag -l); do TAG_EPOCH=$(git log -1 --format=%ct "$tag" 2>/dev/null || echo 0); if [ "${TAG_EPOCH:-0}" -gt "$TARGET_EPOCH" ]; then git tag -d "$tag" >/dev/null 2>&1 || true; fi; done
+BASE_COMMIT=$(git rev-parse c35d0c6e48ece06b2f420e3804c5f7267820d129^{commit})
+for tag in $(git tag -l); do TAG_COMMIT=$(git rev-parse -q --verify "$tag^{commit}" 2>/dev/null || true); if [ -z "$TAG_COMMIT" ] || ! git merge-base --is-ancestor "$TAG_COMMIT" "$BASE_COMMIT"; then git tag -d "$tag" >/dev/null 2>&1 || true; fi; done
 git branch | grep -v '^\*' | xargs -r git branch -D || true
+rm -f .git/ORIG_HEAD .git/FETCH_HEAD
 git reflog expire --expire=now --all
 git gc --prune=now --aggressive
-AFTER_TIMESTAMP=$(date -d "$TARGET_TIMESTAMP + 1 second" '+%Y-%m-%d %H:%M:%S')
-COMMIT_COUNT=$(git log --oneline --all --since="$AFTER_TIMESTAMP" | wc -l)
-[ "$COMMIT_COUNT" -eq 0 ] || exit 1
+EXTRA_REF_COMMITS=$(git rev-list --all --not "$BASE_COMMIT" | wc -l)
+[ "$EXTRA_REF_COMMITS" -eq 0 ] || exit 1
+EXTRA_STORED_COMMITS=$(comm -23 <(git cat-file --batch-all-objects --batch-check="%(objecttype) %(objectname)" | awk '$1 == "commit" {print $2}' | sort) <(git rev-list "$BASE_COMMIT" | sort) | wc -l)
+[ "$EXTRA_STORED_COMMITS" -eq 0 ] || exit 1
+UNREACHABLE_OBJECTS=$(git fsck --unreachable --no-reflogs 2>/dev/null | wc -l)
+[ "$UNREACHABLE_OBJECTS" -eq 0 ] || exit 1
 chmod -R 777 /testbed
 cd - || true
 cd /testbed
@@ -137,18 +140,7 @@ source $NVM_DIR/nvm.sh
 pnpm install
 pnpm run build
 chmod -R 777 /testbed
-EOF_29fa2af80115
-
-
-RUN <<EOF_2866af1239f5
-#!/bin/bash
-set -euxo pipefail
-mkdir -p /swebench/image_assets
-mkdir -p $(dirname '/swebench/image_assets/test_patch/test/fixtures/controller.doughnut/single-slice-circumference-405.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/test/fixtures/controller.doughnut/single-slice-circumference-405.png' 'https://raw.githubusercontent.com/chartjs/Chart.js/ec852acd62f04c73dd38afd13cbce117737b2f75/test/fixtures/controller.doughnut/single-slice-circumference-405.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/test/fixtures/controller.doughnut/single-slice-offset.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/test/fixtures/controller.doughnut/single-slice-offset.png' 'https://raw.githubusercontent.com/chartjs/Chart.js/ec852acd62f04c73dd38afd13cbce117737b2f75/test/fixtures/controller.doughnut/single-slice-offset.png' || true
-EOF_2866af1239f5
+EOF_2303b0f244ec
 
 
 COPY ["problem_assets", "/problem_assets"]

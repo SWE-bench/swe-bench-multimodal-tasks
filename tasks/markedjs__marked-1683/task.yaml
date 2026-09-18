@@ -9,7 +9,6 @@ image_assets:
   problem_statement:
   - https://img.youtube.com/vi/s6bCmZmy9aQ/0.jpg
   - https://user-images.githubusercontent.com/10571313/82298114-bd52f300-9a07-11ea-805b-854f69d2ecb0.png
-  - https://marked.js.org/demo/?text=%23%20Expected%20result%0A%0A%5B!%5BManny%20Pacquiao%5D(https%3A%2F%2Fimg.youtube.com%2Fvi%2Fs6bCmZmy9aQ%2F0.jpg
   test_patch: []
 instance_id: markedjs__marked-1683
 log_parser: parse_log_marked

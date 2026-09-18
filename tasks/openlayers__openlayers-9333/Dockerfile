@@ -101,22 +101,25 @@ python2 -V
 EOF_55f960f4ac15
 
 
-RUN <<EOF_fa8b35f58396
+RUN <<EOF_b932cdfb777b
 #!/bin/bash
 set -euxo pipefail
 (mkdir -p /testbed && cd /testbed && git init -q . && git remote add origin https://github.com/openlayers/openlayers && git fetch -q --depth 1 origin 84bf801b5267201c1ca5b33d390c34e8f0db6d3b && git reset -q --hard FETCH_HEAD) || (rm -rf /testbed && git clone -o origin https://github.com/openlayers/openlayers /testbed)
 cd /testbed
 git reset --hard 84bf801b5267201c1ca5b33d390c34e8f0db6d3b
 git remote remove origin
-TARGET_TIMESTAMP=$(git show -s --format=%ci 84bf801b5267201c1ca5b33d390c34e8f0db6d3b)
-TARGET_EPOCH=$(git show -s --format=%ct 84bf801b5267201c1ca5b33d390c34e8f0db6d3b)
-for tag in $(git tag -l); do TAG_EPOCH=$(git log -1 --format=%ct "$tag" 2>/dev/null || echo 0); if [ "${TAG_EPOCH:-0}" -gt "$TARGET_EPOCH" ]; then git tag -d "$tag" >/dev/null 2>&1 || true; fi; done
+BASE_COMMIT=$(git rev-parse 84bf801b5267201c1ca5b33d390c34e8f0db6d3b^{commit})
+for tag in $(git tag -l); do TAG_COMMIT=$(git rev-parse -q --verify "$tag^{commit}" 2>/dev/null || true); if [ -z "$TAG_COMMIT" ] || ! git merge-base --is-ancestor "$TAG_COMMIT" "$BASE_COMMIT"; then git tag -d "$tag" >/dev/null 2>&1 || true; fi; done
 git branch | grep -v '^\*' | xargs -r git branch -D || true
+rm -f .git/ORIG_HEAD .git/FETCH_HEAD
 git reflog expire --expire=now --all
 git gc --prune=now --aggressive
-AFTER_TIMESTAMP=$(date -d "$TARGET_TIMESTAMP + 1 second" '+%Y-%m-%d %H:%M:%S')
-COMMIT_COUNT=$(git log --oneline --all --since="$AFTER_TIMESTAMP" | wc -l)
-[ "$COMMIT_COUNT" -eq 0 ] || exit 1
+EXTRA_REF_COMMITS=$(git rev-list --all --not "$BASE_COMMIT" | wc -l)
+[ "$EXTRA_REF_COMMITS" -eq 0 ] || exit 1
+EXTRA_STORED_COMMITS=$(comm -23 <(git cat-file --batch-all-objects --batch-check="%(objecttype) %(objectname)" | awk '$1 == "commit" {print $2}' | sort) <(git rev-list "$BASE_COMMIT" | sort) | wc -l)
+[ "$EXTRA_STORED_COMMITS" -eq 0 ] || exit 1
+UNREACHABLE_OBJECTS=$(git fsck --unreachable --no-reflogs 2>/dev/null | wc -l)
+[ "$UNREACHABLE_OBJECTS" -eq 0 ] || exit 1
 chmod -R 777 /testbed
 cd - || true
 cd /testbed
@@ -124,56 +127,7 @@ git clean -fdxq
 source $NVM_DIR/nvm.sh
 npm install
 chmod -R 777 /testbed
-EOF_fa8b35f58396
-
-
-RUN <<EOF_e95aba9eeb64
-#!/bin/bash
-set -euxo pipefail
-mkdir -p /swebench/image_assets
-mkdir -p $(dirname '/swebench/image_assets/test_patch/rendering/cases/layer-image/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/rendering/cases/layer-image/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/7510a19c739c644f15f76333114b64d431b10555/rendering/cases/layer-image/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/rendering/cases/layer-tile-none-square/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/rendering/cases/layer-tile-none-square/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/7510a19c739c644f15f76333114b64d431b10555/rendering/cases/layer-tile-none-square/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/rendering/cases/layer-tile-opacity/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/rendering/cases/layer-tile-opacity/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/7510a19c739c644f15f76333114b64d431b10555/rendering/cases/layer-tile-opacity/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/rendering/cases/layer-tile-two-layers/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/rendering/cases/layer-tile-two-layers/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/7510a19c739c644f15f76333114b64d431b10555/rendering/cases/layer-tile-two-layers/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/rendering/cases/layer-vector-decluttering/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/rendering/cases/layer-vector-decluttering/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/7510a19c739c644f15f76333114b64d431b10555/rendering/cases/layer-vector-decluttering/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/rendering/cases/layer-vector-polygon-partial/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/rendering/cases/layer-vector-polygon-partial/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/7510a19c739c644f15f76333114b64d431b10555/rendering/cases/layer-vector-polygon-partial/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/rendering/cases/layer-vector-polygon/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/rendering/cases/layer-vector-polygon/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/7510a19c739c644f15f76333114b64d431b10555/rendering/cases/layer-vector-polygon/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/rendering/cases/layer-vector/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/rendering/cases/layer-vector/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/7510a19c739c644f15f76333114b64d431b10555/rendering/cases/layer-vector/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/rendering/cases/layer-vectorimage/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/rendering/cases/layer-vectorimage/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/7510a19c739c644f15f76333114b64d431b10555/rendering/cases/layer-vectorimage/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/rendering/cases/layer-vectortile-rotate-hidpi/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/rendering/cases/layer-vectortile-rotate-hidpi/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/7510a19c739c644f15f76333114b64d431b10555/rendering/cases/layer-vectortile-rotate-hidpi/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/rendering/cases/map-pan/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/rendering/cases/map-pan/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/7510a19c739c644f15f76333114b64d431b10555/rendering/cases/map-pan/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/rendering/cases/map/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/rendering/cases/map/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/7510a19c739c644f15f76333114b64d431b10555/rendering/cases/map/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/rendering/cases/multipoint-style/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/rendering/cases/multipoint-style/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/7510a19c739c644f15f76333114b64d431b10555/rendering/cases/multipoint-style/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/rendering/cases/point-style/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/rendering/cases/point-style/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/7510a19c739c644f15f76333114b64d431b10555/rendering/cases/point-style/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/rendering/cases/regularshape-style/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/rendering/cases/regularshape-style/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/7510a19c739c644f15f76333114b64d431b10555/rendering/cases/regularshape-style/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/rendering/cases/source-raster/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/rendering/cases/source-raster/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/7510a19c739c644f15f76333114b64d431b10555/rendering/cases/source-raster/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/rendering/cases/source-tilewms-gutter0/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/rendering/cases/source-tilewms-gutter0/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/7510a19c739c644f15f76333114b64d431b10555/rendering/cases/source-tilewms-gutter0/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/rendering/cases/source-tilewms-gutter20/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/rendering/cases/source-tilewms-gutter20/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/7510a19c739c644f15f76333114b64d431b10555/rendering/cases/source-tilewms-gutter20/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/rendering/cases/text-style-linestring-nice/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/rendering/cases/text-style-linestring-nice/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/7510a19c739c644f15f76333114b64d431b10555/rendering/cases/text-style-linestring-nice/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/rendering/cases/text-style-linestring-ugly/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/rendering/cases/text-style-linestring-ugly/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/7510a19c739c644f15f76333114b64d431b10555/rendering/cases/text-style-linestring-ugly/expected.png' || true
-mkdir -p $(dirname '/swebench/image_assets/test_patch/rendering/cases/text-style-overlap/expected.png')
-curl -fsSL -o '/swebench/image_assets/test_patch/rendering/cases/text-style-overlap/expected.png' 'https://raw.githubusercontent.com/openlayers/openlayers/7510a19c739c644f15f76333114b64d431b10555/rendering/cases/text-style-overlap/expected.png' || true
-EOF_e95aba9eeb64
+EOF_b932cdfb777b
 
 
 WORKDIR /testbed

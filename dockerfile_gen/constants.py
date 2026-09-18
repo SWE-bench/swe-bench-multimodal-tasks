@@ -87,21 +87,30 @@ def _chromium_snapshot_install(revision: str) -> list[str]:
         "cp /usr/bin/google-chrome /usr/bin/google-chrome-stable",
     ]
 
+
+def _chrome_for_testing_install(version: str) -> list[str]:
+    """Install an exact Chrome for Testing build, replacing system Chrome."""
+    return [
+        (
+            "wget -q https://storage.googleapis.com/chrome-for-testing-public/"
+            f"{version}/linux64/chrome-linux64.zip"
+        ),
+        "unzip -q chrome-linux64.zip -d /opt/",
+        "rm chrome-linux64.zip",
+        "rm -f /usr/bin/google-chrome /usr/bin/google-chrome-stable",
+        'printf \'#!/bin/bash\\nexec /opt/chrome-linux64/chrome --no-sandbox "$@"\\n\' > /usr/bin/google-chrome',
+        "chmod +x /usr/bin/google-chrome",
+        "cp /usr/bin/google-chrome /usr/bin/google-chrome-stable",
+    ]
+
+
 # Revision → approximate Chrome version mapping:
 #   599821 → Chrome ~72 (Oct 2018) — for v1.11-v1.15
 #   793478 → Chrome ~85 (Aug 2020) — for v1.21
 # Chrome for Testing 120 — for v1.27 and openlayers v7.4
 _CHROMIUM_72_INSTALL = _chromium_snapshot_install("599821")
 _CHROMIUM_85_INSTALL = _chromium_snapshot_install("793478")
-_CHROME_120_INSTALL = [
-    "wget -q https://storage.googleapis.com/chrome-for-testing-public/120.0.6099.109/linux64/chrome-linux64.zip",
-    "unzip -q chrome-linux64.zip -d /opt/",
-    "rm chrome-linux64.zip",
-    "rm -f /usr/bin/google-chrome /usr/bin/google-chrome-stable",
-    'printf \'#!/bin/bash\\nexec /opt/chrome-linux64/chrome --no-sandbox "$@"\\n\' > /usr/bin/google-chrome',
-    "chmod +x /usr/bin/google-chrome",
-    "cp /usr/bin/google-chrome /usr/bin/google-chrome-stable",
-]
+_CHROME_120_INSTALL = _chrome_for_testing_install("120.0.6099.109")
 
 # npm removed the unscoped color-studio, so commits pinning 1.0.5 can no longer install.
 # The git tag still exists and later calypso commits install it this way themselves.
@@ -673,7 +682,6 @@ SPECS_HIGHLIGHTJS = {k: {
         "npm run build"
     ],
     "test_cmd": [
-        "npm install",
         "npm run build",
         "npm run test",
     ],
@@ -943,7 +951,6 @@ SPECS_GROMMET = {
             "yarn install"
         ],
         "test_cmd": [
-            "yarn install",
             "yarn test",
         ],
         "docker_specs": {
@@ -1008,8 +1015,8 @@ for v in [
         'npm i sass@1.36.0 --save-exact',
         'npm show cheerio',
     ])
-# v1.21: Gold patch adds lodash.clonedeep dependency to tree component
-SPECS_NEXT['1.21']['install'].append("npm install lodash.clonedeep@4.5.0 --save-exact")
+# Gold-only dependency changes are supplied through private evaluator caches. They must
+# not be installed in these public solver images (see offline_dependencies.json).
 # v1.22-1.24 (Node 14): pin puppeteer (v22+ requires Node 18) and highlight.js
 # (latest uses \p{XID_Start} regex which requires Node 15+)
 for v in ['1.22', '1.23', '1.24']:
@@ -1073,6 +1080,12 @@ SPECS_CYPRESS = {
 for v in ['12.9', '12.10', '12.11', '12.12', '12.14', '12.17', '13.4', '13.6']:
     SPECS_CYPRESS[v]['docker_specs']['node_version'] = '21.6.2'
 
+CARBON_ACHECKER_ARCHIVE = "07Oct2020"
+CARBON_ACHECKER_ARCHIVE_PATH = "2020.10.07"
+CARBON_ACHECKER_ENGINE_VERSION = "3.1.0"
+CARBON_ACHECKER_OFFLINE_ROOT = "/opt/achecker-offline"
+CARBON_ACHECKER_OFFLINE_PORT = 18080
+
 SPECS_CARBON = {
     **{k: {
         "install": [
@@ -1108,13 +1121,65 @@ for v in SPECS_CARBON:
         "tar xzf nwsapi-2.2.7.tgz -C node_modules/nwsapi --strip-components=1 && "
         "rm nwsapi-2.2.7.tgz"
     )
-# a11y engine + rules are fetched from a CDN at runtime; pinning the archive makes results
-# reproducible but not offline, so ~4.5% of carbon runs flake -- see issue #8
-CARBON_ACHECKER_ARCHIVE = '07Oct2020'
+# accessibility-checker normally fetches both archives.json and its ACE engine during
+# every test run. Mirror the archive metadata and both Node/browser engine variants at
+# image-build time. eval.sh serves this directory over loopback because checker releases
+# 3.1.1 and 3.1.32 use different HTTP clients/configuration APIs, but both understand a
+# custom HTTP rule server. The hashes make a CDN error page or changed artifact fail the
+# image build instead of becoming a flaky evaluation.
 for v in SPECS_CARBON:
-    SPECS_CARBON[v]['install'].append(
-        f"echo 'ruleArchive: {CARBON_ACHECKER_ARCHIVE}' > .achecker.yml"
+    engine_dir = (
+        f"{CARBON_ACHECKER_OFFLINE_ROOT}/archives/"
+        f"{CARBON_ACHECKER_ARCHIVE_PATH}/js"
     )
+    engine_url = (
+        "https://cdn.jsdelivr.net/npm/accessibility-checker-engine@"
+        f"{CARBON_ACHECKER_ENGINE_VERSION}"
+    )
+    SPECS_CARBON[v]["install"].extend([
+        f"mkdir -p {engine_dir}",
+        (
+            "curl --retry 5 --retry-all-errors --connect-timeout 30 -fsSL "
+            f"{engine_url}/ace-node.js -o {engine_dir}/ace-node.js"
+        ),
+        (
+            "curl --retry 5 --retry-all-errors --connect-timeout 30 -fsSL "
+            f"{engine_url}/ace.js -o {engine_dir}/ace.js"
+        ),
+        (
+            "printf '%s\\n' "
+            "'7d15e331ff61d00bb4688c4cc0ec1cda91d0e9d023c49a0ad66210d9d4cfad88  "
+            f"{engine_dir}/ace-node.js' "
+            "'49fd0b40371078288a3b0ba7efefba4db7c055e69a31d5657e0bd8bac50e1353  "
+            f"{engine_dir}/ace.js' | sha256sum -c -"
+        ),
+        (
+            "printf '%s\\n' "
+            f"'[{{\"id\":\"{CARBON_ACHECKER_ARCHIVE}\","
+            "\"name\":\"07 October 2020 Deployment (IBM 7.2)\","
+            f"\"version\":\"{CARBON_ACHECKER_ENGINE_VERSION}\","
+            f"\"path\":\"/archives/{CARBON_ACHECKER_ARCHIVE_PATH}\","
+            "\"hidden\":true}]' "
+            f"> {CARBON_ACHECKER_OFFLINE_ROOT}/archives.json"
+        ),
+        (
+            "printf '%s\\n' "
+            f"'ruleArchive: {CARBON_ACHECKER_ARCHIVE}' "
+            "'customRuleServer: true' "
+            f"'rulePack: http://127.0.0.1:{CARBON_ACHECKER_OFFLINE_PORT}/archives/"
+            f"{CARBON_ACHECKER_ARCHIVE_PATH}/js' "
+            f"'ruleServer: http://127.0.0.1:{CARBON_ACHECKER_OFFLINE_PORT}' "
+            f"> {CARBON_ACHECKER_OFFLINE_ROOT}/.achecker.yml"
+        ),
+        (
+            "for checker_dir in node_modules/accessibility-checker "
+            "config/jest-config-carbon/node_modules/accessibility-checker; do "
+            "if [ -d \"$checker_dir\" ]; then "
+            "find \"$checker_dir\" -type f -name ACMetricsLogger.js -exec sed -i "
+            f"'s#https://able.ibm.com/tools#http://127.0.0.1:"
+            f"{CARBON_ACHECKER_OFFLINE_PORT}/tools#g' {{}} +; fi; done"
+        ),
+    ])
 
 SPECS_SCRATCH = {
     **{k: {
@@ -1198,15 +1263,23 @@ SPECS_PRETTIER = {
         '2.6', '2.9', '3.0', '3.3', '3.4'
     ]}
 }
-# v2.2 gold patch adds meriyah parser — pre-install via yarn add so the dep
-# is in yarn's dependency graph and survives subsequent yarn operations.
-# Restore package.json/yarn.lock afterwards (gold patch will re-add meriyah).
+# Modern Yarn does not consume the standard Docker proxy variables. Bridge them
+# only for the networked build command; the YARN_* values are not persisted in the
+# resulting image. This matters on builders whose DNS permits external registries
+# only through an authenticated forward proxy.
+for v in ['3.0', '3.4']:
+    SPECS_PRETTIER[v]["install"][-1] = (
+        'if [ -n "${HTTP_PROXY:-}" ]; then export YARN_HTTP_PROXY="$HTTP_PROXY"; fi; '
+        'if [ -n "${HTTPS_PROXY:-}" ]; then export YARN_HTTPS_PROXY="$HTTPS_PROXY"; fi; '
+        "yarn"
+    )
+# The v2.2 gold patch adds meriyah. Do not preinstall that gold-only dependency in
+# the solver-visible image: the evaluator supplies a private union cache after the
+# agent submits, and eval.sh performs a strict offline install from that cache.
 SPECS_PRETTIER['2.2'] = {
     "install": [
         "npm i -g yarn",
         "yarn",
-        "yarn add meriyah@3.1.2",
-        "git checkout -- package.json yarn.lock 2>/dev/null || true",
     ],
     "test_cmd": "yarn test",
     "docker_specs": {
@@ -1304,6 +1377,23 @@ INSTANCE_OVERRIDES.update({
     for n in (11545, 14932)
 })
 
+# OpenLayers' rendering harness launches the configured executable through its bundled
+# Puppeteer. Chrome 151 closes the DevTools target before any case runs for these six
+# versions. Use the exact browser revision declared by each installed Puppeteer release;
+# these immutable archive URLs are also checked by the offline-grading unit tests.
+_OPENLAYERS_PUPPETEER_BROWSERS = {
+    14414: _chromium_snapshot_install("1069273"),
+    14659: _chromium_snapshot_install("1108766"),
+    15168: _chrome_for_testing_install("116.0.5845.96"),
+    15234: _chrome_for_testing_install("117.0.5938.92"),
+    15365: _chrome_for_testing_install("119.0.6045.105"),
+    15825: _chrome_for_testing_install("124.0.6367.91"),
+}
+INSTANCE_OVERRIDES.update({
+    f"openlayers__openlayers-{number}": {"install_pre": install}
+    for number, install in _OPENLAYERS_PUPPETEER_BROWSERS.items()
+})
+
 # eslint 17618 builds native re2 from source; the bundled node-gyp 13 loads an undici
 # calling webidl.util.markAsUncloneable, which node 21.6.2 lacks. Pin a node-gyp that
 # supports this node.
@@ -1394,6 +1484,19 @@ MAP_REPO_VERSION_TO_SPECS_JS = {
 # permission denied. eval_script lives in the dataset, so pre-create the directory
 # world-writable at build time instead.
 INSTANCE_OVERRIDES.setdefault("openlayers__openlayers-14932", {})["install_post"] = [
+    "mkdir -p /home/chromeuser/.cache/puppeteer/chrome/linux-115.0.5790.98",
+    (
+        "wget -q https://storage.googleapis.com/chrome-for-testing-public/"
+        "115.0.5790.98/linux64/chrome-linux64.zip -O /tmp/chrome-115.zip"
+    ),
+    (
+        "python3 -c \"import zipfile; "
+        "zipfile.ZipFile('/tmp/chrome-115.zip').extractall("
+        "'/home/chromeuser/.cache/puppeteer/chrome/linux-115.0.5790.98')\""
+    ),
+    "rm /tmp/chrome-115.zip",
+    "chmod -R 755 /home/chromeuser/.cache/puppeteer/chrome/linux-115.0.5790.98/chrome-linux64",
+    "chown -R chromeuser:chromeuser /home/chromeuser/.cache/puppeteer",
     "mkdir -p /testbed/build",
     "chmod 777 /testbed/build",
 ]

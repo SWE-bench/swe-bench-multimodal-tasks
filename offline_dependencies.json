@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "instances": {
+    "GoogleChrome__lighthouse-10176": {
+      "manager": "yarn",
+      "mode": "install"
+    },
+    "alibaba-fusion__next-2131": {
+      "manager": "npm",
+      "mode": "install"
+    },
+    "alibaba-fusion__next-3345": {
+      "manager": "npm",
+      "mode": "install"
+    },
+    "bpmn-io__bpmn-js-1802": {
+      "manager": "npm",
+      "mode": "ci"
+    },
+    "bpmn-io__bpmn-js-1928": {
+      "manager": "npm",
+      "mode": "ci"
+    },
+    "grommet__grommet-2131": {
+      "manager": "yarn",
+      "mode": "install"
+    },
+    "openlayers__openlayers-13648": {
+      "manager": "npm",
+      "mode": "ci"
+    },
+    "prettier__prettier-9514": {
+      "manager": "yarn",
+      "mode": "install"
+    },
+    "scratchfoundation__scratch-gui-2778": {
+      "manager": "npm",
+      "mode": "install"
+    }
+  }
+}
